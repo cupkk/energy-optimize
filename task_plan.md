@@ -1,0 +1,71 @@
+# Energy Optimize Paper Task Plan
+
+## Goal
+Analyze the project materials and plan the remaining work for an SCI-style paper, using `最终SCI论文结构及建议.md` and the requirement screenshots as the main source of truth. Experiments must be completed before paper drafting.
+
+## Phases
+
+| Phase | Status | Output |
+|---|---|---|
+| 1. Inventory project materials | complete | File list and source priority |
+| 2. Extract paper requirements | complete | Requirement checklist from screenshots and docs |
+| 3. Compare existing first-version materials | complete | Gaps between first draft and final SCI structure |
+| 4. Define experiment completion plan | complete | Experiments, metrics, figures, tables, and execution order |
+| 5. Define paper-writing plan | complete | Chapter-by-chapter writing sequence after experiments |
+
+## Experiment-First Execution Plan
+
+### A. Build Reproducible Simulation Core
+- [x] Generate stochastic EV sessions: arrival time, departure time, energy demand, max charging power, and charging efficiency.
+- [x] Generate system signals: time-varying electricity price, base load, transformer capacity, and optional base-load forecast error variance.
+- [x] Track online state: active EV set, remaining demand queue `Q_i(t)`, deadline urgency weight `w_i(t)`, delivered energy, and violations.
+
+### B. Implement Baselines
+- [x] Uncontrolled charging: charge at max power subject to availability and capacity handling.
+- [x] Greedy price/deadline heuristic: prioritize low-price slots and urgent vehicles.
+- [x] Offline centralized optimum: full future information benchmark.
+- [x] Offline ADMM: first-version distributed baseline.
+- [x] Dual decomposition: course-aligned decomposition baseline.
+- [x] Proposed online Lyapunov-ADMM: final SCI main method.
+
+### C. Produce Required Metrics
+- [x] Total charging cost.
+- [x] Peak load and peak-to-average ratio.
+- [x] Deadline violation rate.
+- [x] Average backlog or remaining demand.
+- [x] Fairness index.
+- [x] Runtime and ADMM iteration count.
+- [x] Capacity violation rate for risk-buffer experiments.
+
+### D. Required Figure/Table Set Before Writing
+- [x] Scenario/data setup table.
+- [x] Baseline comparison table across methods.
+- [x] Cost and peak-load comparison plot.
+- [x] Deadline violation/backlog comparison plot.
+- [x] Cost-delay trade-off plot versus Lyapunov parameter `V`.
+- [x] Scalability plot versus number of EVs.
+- [x] Risk-buffer sensitivity plot versus `kappa` or `epsilon`.
+
+### E. Stop Condition Before Drafting
+- No manuscript drafting begins until the experiment script/notebook can reproduce all final tables and figures from a fixed random seed.
+- Current technical baselines are implemented; remaining pre-writing work is result sanity-checking and figure/table selection.
+
+## Source Priority
+1. `最终SCI论文结构及建议.md`
+2. `论文要求/*.png`
+3. `第一版论文结构.md`
+4. `第一版摘要.docx`
+
+## Decisions
+- The immediate next work is experimental planning and completion, not direct manuscript drafting.
+- The final paper direction should follow the final SCI document, not the first-version offline ADMM structure.
+- The first-version materials should be reused as baselines and early abstract context, not as the final paper's main contribution.
+- The first English draft is written in LaTeX under `paper/`, using IEEEtran one-column style and linking to the generated experiment figures.
+
+## Errors Encountered
+
+| Error | Attempt | Resolution |
+|---|---|---|
+| `python-docx` failed on literal Chinese path rendered as `?????.docx` | Directly opened `第一版摘要.docx` in Python source | Re-ran extraction by globbing `*.docx`; content extracted successfully |
+| PowerShell profile warning appears before commands | Running PowerShell commands in this environment | Commands still completed when exit code was 0; warning is unrelated to experiment code |
+| `pdflatex`/`bibtex` not found | Checked LaTeX compiler availability | Generated LaTeX source only; PDF compilation must be done in a LaTeX-enabled environment |

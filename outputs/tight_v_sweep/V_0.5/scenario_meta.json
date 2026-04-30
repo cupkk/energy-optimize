@@ -1,0 +1,13 @@
+{
+  "n_ev": 50,
+  "n_slots": 48,
+  "delta_h": 0.5,
+  "seed": 7,
+  "kappa": 1.0,
+  "V": 0.5,
+  "capacity_factor": 0.22,
+  "total_requested_energy_kwh": 929.5466632471994,
+  "mean_parking_slots": 9.82,
+  "mean_energy_kwh": 18.59093326494399,
+  "mean_pmax_kw": 7.944
+}

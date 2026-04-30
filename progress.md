@@ -1,0 +1,24 @@
+# Progress
+
+## 2026-04-30
+- Initialized planning files for the paper-analysis workflow.
+- Read `最终SCI论文结构及建议.md`, `第一版论文结构.md`, and extracted text from `第一版摘要.docx`.
+- Identified the major direction shift from offline fair ADMM to online stochastic risk-aware Lyapunov-ADMM.
+- Logged and resolved a Windows Chinese-path extraction issue for `.docx`.
+- Reviewed four requirement screenshots and extracted report format, structure, scoring, and deadline constraints.
+- Updated the task plan with an experiment-first execution sequence and required result artifacts.
+- Added the first experiment implementation in `experiments/ev_charging_experiments.py`.
+- Added `实验记录.md` as the plain-language running experiment log.
+- Ran the base 50-EV experiment and a small Lyapunov `V` sweep; outputs are under `outputs/base_experiment/` and `outputs/v_sweep/`.
+- Added `capacity_factor` to create loose, medium, and tight capacity scenarios.
+- Improved online Lyapunov-ADMM with a deadline safety floor; tight-scenario significant deadline violation dropped to zero in the latest 50-EV capacity sweep.
+- Added formal CLI modes for `capacity-sweep`, `v-sweep`, and `risk-sweep`, each producing CSV and PNG outputs.
+- Ran a risk-buffer sweep with `V=0.2`; increasing `kappa` reduced capacity violation from 4.17% to 0% in the tight 50-EV scenario.
+- Added and ran `scalability-sweep` for 50, 100, 200, and 500 EVs; outputs are under `outputs/scalability_sweep/`.
+- Implemented dual decomposition and offline ADMM baselines.
+- Re-ran capacity and scalability sweeps with all baselines; outputs are under `outputs/capacity_sweep_with_baselines/` and `outputs/scalability_sweep_with_baselines/`.
+- Audited output folders and documented the recommended CSV/PNG files to use for final paper figures.
+- Improved the capacity and scalability summary plots to show more informative metrics.
+- Added `实验结论与汇报提纲.md` for presentation-friendly experiment interpretation.
+- Created the first English LaTeX paper draft in `paper/main.tex` and bibliography in `paper/references.bib`.
+- Added `论文写作计划.md` and recorded that the current environment does not provide `pdflatex`/`bibtex` for PDF compilation.

@@ -4,6 +4,7 @@ __pycache__/
 outputs/
 data/raw/
 tools/tectonic/
+paper/build/
 *.aux
 *.bbl
 *.blg

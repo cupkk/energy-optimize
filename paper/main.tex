@@ -1,4 +1,4 @@
-\documentclass[11pt,onecolumn]{IEEEtran}
+\documentclass[journal]{IEEEtran}
 
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
@@ -15,204 +15,367 @@ Institute of Special Equipment}
 \maketitle
 
 \begin{abstract}
-Large-scale electric vehicle (EV) charging networks require real-time coordination under uncertain vehicle arrivals, heterogeneous departure deadlines, time-varying electricity prices, and transformer capacity limits. Offline centralized optimization can obtain low charging cost when complete future information is available, but it is not directly causal. This paper develops an online risk-aware distributed EV charging framework based on deadline-aware virtual queues, Lyapunov drift-plus-penalty control, and ADMM-based per-slot coordination. The remaining charging demand of each EV is modeled as a dynamic queue, and a risk buffer protects the transformer capacity constraint against base-load prediction errors. Numerical experiments compare uncontrolled charging, greedy charging, offline centralized optimization, dual decomposition, offline ADMM, and the proposed online Lyapunov-ADMM method. In synthetic tight-capacity cases, the proposed method improves peak-load and capacity-safety metrics at the cost of higher charging cost than offline benchmarks. A public-data check indicates that real office-parking sessions require joint tuning of cost, deadline, and risk parameters.
+Large-scale electric vehicle (EV) charging networks require real-time coordination under uncertain vehicle arrivals, heterogeneous departure deadlines, time-varying electricity prices, and transformer capacity limits. Offline centralized optimization can obtain low charging cost when complete future information is available, but it is not directly causal and requires global information. This paper develops an online risk-aware distributed EV charging framework based on deadline-aware virtual queues, Lyapunov drift-plus-penalty control, and ADMM-based per-slot coordination. The remaining charging demand of each EV is modeled as a dynamic queue, and a risk buffer protects the transformer capacity constraint against base-load prediction errors. A drift upper bound is used to derive a tractable per-slot objective, while ADMM separates EV-side local updates from aggregator-side capacity coordination. Numerical experiments compare uncontrolled charging, greedy charging, offline centralized optimization, dual decomposition, offline ADMM, and the proposed online Lyapunov-ADMM method. The results show that the proposed method improves peak-load and capacity-safety metrics in tight-capacity cases at the cost of higher charging cost than full-information offline benchmarks. A public-data check based on office-parking charging sessions further indicates that cost, deadline, and risk parameters must be tuned jointly.
 \end{abstract}
 
+\begin{IEEEkeywords}
+Electric vehicle charging, online optimization, Lyapunov optimization, ADMM, distributed scheduling, risk-aware control.
+\end{IEEEkeywords}
+
 \section{Introduction}
-Coordinated EV charging is becoming an important problem in smart grids because uncoordinated charging can increase electricity cost, create new peak loads, stress distribution transformers, and complicate vehicle-grid interaction \cite{Clement2010,Deilami2011,Guille2009,Richardson2013,Yilmaz2012}. The scheduling problem is challenging because EVs have heterogeneous arrival times, departure deadlines, energy demands, and charging-rate limits. In addition, electricity prices and non-EV base load vary over time, so a charging policy should balance cost saving, peak-load reduction, user satisfaction, and transformer safety.
+Coordinated EV charging is becoming an important problem in smart grids because uncoordinated charging can increase electricity cost, create new peak loads, stress distribution transformers, and complicate vehicle-grid interaction \cite{Clement2010,Deilami2011,Guille2009,Richardson2013,Yilmaz2012}. The scheduling problem is difficult because EVs have heterogeneous arrival times, departure deadlines, energy demands, and charging-rate limits. In addition, electricity prices and non-EV base load vary over time, so a charging policy must balance cost saving, peak-load reduction, user satisfaction, and transformer safety.
 
 Many EV charging studies formulate the problem as an offline optimization task, where all vehicle information is known before scheduling. Such formulations are useful benchmarks, but practical charging stations often operate online: vehicles arrive randomly, remaining demand changes over time, and the aggregator must decide before future arrivals are known. The central question is therefore how an EV charging network can make scalable and risk-aware online decisions while preserving deadline satisfaction.
 
-The method combines Lyapunov online control with ADMM-based distributed coordination. Lyapunov control converts long-term deadline pressure into a sequence of tractable per-slot optimization problems. ADMM decomposes each per-slot problem into EV-side local updates and aggregator-side coordination. This design keeps the controller causal while retaining the distributed structure emphasized in decomposition-based EV charging methods.
+This paper combines Lyapunov online control with ADMM-based distributed coordination. Lyapunov control converts long-term deadline pressure into a sequence of tractable per-slot optimization problems. ADMM decomposes each per-slot problem into EV-side local updates and aggregator-side coordination. This design keeps the controller causal while retaining the distributed structure emphasized in decomposition-based EV charging methods.
 
-The contributions are summarized as follows. First, an online EV charging model is formulated with deadline-aware virtual queues, time-varying prices, and risk-buffered transformer constraints. Second, a Lyapunov drift-plus-penalty objective is derived to trade off charging cost, peak-load smoothing, and deadline urgency. Third, an ADMM-based distributed solver is implemented and compared with centralized optimization, dual decomposition, offline ADMM, greedy charging, and uncontrolled charging.
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/framework_diagram.pdf}
+\caption{Online Lyapunov-ADMM scheduling framework. The aggregator observes the active set and the risk-buffered transformer margin, while EV-side updates use local charging limits and remaining-demand queues.}
+\label{fig:framework}
+\end{figure*}
+
+The contributions are as follows. First, an online EV charging model is formulated with deadline-aware virtual queues, time-varying prices, and risk-buffered transformer constraints. Second, the Lyapunov drift-plus-penalty step is derived explicitly, including the role of urgency weights and the deadline safety floor. Third, a distributed ADMM implementation is developed for the resulting per-slot convex problem. Fourth, the method is evaluated against uncontrolled, greedy, centralized offline, dual-decomposition, and offline ADMM baselines using multi-seed synthetic experiments, parameter sweeps, ablations, scalability checks, and a public charging-session check.
 
 \section{Related Work}
-Centralized EV charging optimization has been widely studied for valley filling, cost minimization, grid constraints, and regulation services. Sortomme and El-Sharkawi developed optimal charging strategies for unidirectional vehicle-to-grid services \cite{Sortomme2011}. Sundstrom and Binding considered flexible charging with distribution-grid constraints \cite{Sundstrom2012}. Charging and discharging schedules, battery-health-aware charging, renewable-aware charging, and real-time charging-park management have also been studied in broader EV-smart-grid settings \cite{He2012,Bashash2010,Mwasilu2014,Zakariazadeh2014}. These methods provide useful benchmarks, but they typically require a central aggregator and sufficient information about the charging population.
+Centralized EV charging optimization has been widely studied for valley filling, cost minimization, grid constraints, and regulation services. Sortomme and El-Sharkawi developed optimal charging strategies for unidirectional vehicle-to-grid services \cite{Sortomme2011}. Sundstrom and Binding considered flexible charging with distribution-grid constraints \cite{Sundstrom2012}. Charging and discharging schedules, battery-health-aware charging, renewable-aware charging, and real-time charging-park management have also been studied in broader EV-smart-grid settings \cite{He2012,Bashash2010,Mwasilu2014,Zakariazadeh2014}. These methods provide useful cost benchmarks, but they typically require a central aggregator and sufficient information about the charging population.
 
-Decentralized and distributed EV charging control has also received significant attention. Gan, Topcu, and Low proposed decentralized and schedule-constrained charging protocols that exploit EV flexibility for valley filling \cite{Gan2013,Gan2013Allerton}. Ma, Callaway, and Hiskens studied decentralized charging control for large plug-in EV populations using game-theoretic ideas \cite{Ma2013}. Other online or heuristic methods address practical charging constraints and discrete charging rates \cite{Alonso2014,Masoum2015,Lee2021Discrete}. These works show that distributed coordination can reduce central computation and communication burden.
+Decentralized and distributed EV charging control has received significant attention. Gan, Topcu, and Low proposed decentralized and schedule-constrained charging protocols that exploit EV flexibility for valley filling \cite{Gan2013,Gan2013Allerton}. Ma, Callaway, and Hiskens studied decentralized charging control for large plug-in EV populations using game-theoretic ideas \cite{Ma2013}. Other online or heuristic methods address practical charging constraints and discrete charging rates \cite{Alonso2014,Masoum2015,Lee2021Discrete}. These studies show that distributed coordination can reduce central computation and communication burden, but many formulations remain deterministic or assume knowledge of the scheduling horizon.
 
-ADMM is a standard tool for distributed convex optimization. Boyd et al. provide a general treatment of ADMM and explain why it is well suited to decomposable large-scale optimization problems \cite{Boyd2011}. The method is connected to Douglas--Rachford splitting, augmented Lagrangian decomposition, proximal algorithms, and multi-agent optimization \cite{Eckstein1992,Gabay1976,Parikh2014,Nedic2009}. Related ADMM ideas have been used in distributed optimal power flow \cite{DallAnese2013,Erseghe2014}. In EV charging, ADMM-style methods are attractive because EV-level objectives are local while transformer-capacity constraints are globally coupled.
+ADMM is a standard tool for distributed convex optimization. Boyd et al. provide a general treatment of ADMM and explain why it is well suited to decomposable large-scale optimization problems \cite{Boyd2011}. The method is connected to Douglas--Rachford splitting, augmented Lagrangian decomposition, proximal algorithms, and multi-agent optimization \cite{Eckstein1992,Gabay1976,Parikh2014,Nedic2009}. ADMM has also been used in distributed optimal power flow \cite{DallAnese2013,Erseghe2014}. In EV charging, ADMM-style methods are attractive because EV-level objectives are local while transformer-capacity constraints are globally coupled.
 
 Online stochastic optimization is another relevant line of work. Queue-based MaxWeight ideas provide the foundation for throughput-aware online scheduling \cite{Tassiulas1992,Tassiulas1993,Georgiadis2006,Stolyar2004}. Neely's Lyapunov optimization framework shows how drift-plus-penalty methods can make online decisions in stochastic systems without requiring future information \cite{Neely2010}. Risk-aware capacity management is related to robust, stochastic, and chance-constrained optimization \cite{Bertsimas2004,Bertsimas2011,BenTal2009,Shapiro2014,Nemirovski2006,Calafiore2006,Campi2008}. Reinforcement learning provides another online-control direction \cite{Sutton2018,Watkins1992,Mnih2015}; this paper instead uses a convex queue-based controller for interpretability and tunability.
 
-Empirical charging datasets are increasingly important for validating charging algorithms. ACN-Data provides an open workplace and public charging dataset \cite{Lee2019}. Recent office-building charging studies analyze information value, predictive charging, parking-lot allocation, and user-facing guarantees \cite{Winschermann2023Value,Hoogsteen2023Robust,Arias2023Parking,Winschermann2023Guarantees}. This study uses synthetic experiments for controlled sweeps and performs a public-data check with the 4TU/ElaadNL large office parking-lot dataset \cite{DeBont2025ElaadOffice}. The contribution is to integrate deadline-aware Lyapunov queues with ADMM-based per-slot coordination and to evaluate cost, peak load, safety, scalability, and public-session sensitivity in a common framework.
+Empirical charging datasets are increasingly important for evaluating charging algorithms. ACN-Data provides an open workplace and public charging dataset \cite{Lee2019}. Recent office-building charging studies analyze information value, predictive charging, parking-lot allocation, and user-facing guarantees \cite{Winschermann2023Value,Hoogsteen2023Robust,Arias2023Parking,Winschermann2023Guarantees}. This study uses synthetic experiments for controlled sweeps and performs a public-data check with the 4TU/ElaadNL large office parking-lot dataset \cite{DeBont2025ElaadOffice}. The intended gap is the combination of online stochastic operation, deadline-aware queue pressure, risk-aware capacity margins, and ADMM-based distributed coordination in one evaluation framework.
 
-\section{System Model}
+\section{System Model and Benchmarks}
+\subsection{Charging Model}
 Time is divided into $T$ slots of length $\Delta t$. Let $\mathcal{N}(t)$ be the set of active EVs at slot $t$. Each EV $i$ has arrival time $a_i$, departure time $d_i$, energy demand $E_i$, maximum charging power $p_i^{\max}$, and charging efficiency $\eta_i$. The decision variable $p_i(t)$ denotes the charging power assigned to EV $i$ at slot $t$.
 
-The basic constraints are
+The basic charging constraints are
 \begin{align}
-0 \le p_i(t) \le p_i^{\max}, \quad i \in \mathcal{N}(t), \\
-p_i(t)=0, \quad t<a_i \text{ or } t\ge d_i .
+0 \le p_i(t) \le p_i^{\max}, \quad i\in\mathcal{N}(t), \label{eq:box}\\
+p_i(t)=0, \quad t<a_i \ \text{or}\ t\ge d_i . \label{eq:availability}
 \end{align}
-Let $\hat B_t$ be the forecast non-EV base load, $C_t$ be transformer capacity, and $\sigma_t$ be the standard deviation of base-load forecast error. A risk-aware capacity constraint is written as
+Let $\hat B_t$ be the forecast non-EV base load, $B_t$ be the realized base load, $C_t$ be transformer capacity, and $\sigma_t$ be the standard deviation of the base-load forecast error. The online controller uses the risk-buffered capacity constraint
 \begin{equation}
-\sum_{i\in\mathcal{N}(t)} p_i(t) + \hat B_t + \kappa\sigma_t \le C_t ,
+\sum_{i\in\mathcal{N}(t)} p_i(t)+\hat B_t+\kappa\sigma_t \le C_t ,
+\label{eq:risk_capacity}
 \end{equation}
-where $\kappa\ge0$ controls the safety buffer. A larger $\kappa$ leaves more capacity margin for uncertainty.
+where $\kappa\ge0$ controls the safety margin. A larger $\kappa$ leaves more capacity for load forecast errors.
+
+\subsection{Offline Full-Information Benchmark}
+The offline centralized LP benchmark uses all vehicle information over the horizon. It minimizes energy cost plus a high penalty for unserved energy:
+\begin{align}
+\min_{\{p_i(t)\},\{s_i\}} \quad
+& \sum_{t=1}^{T}\pi_t\Delta t\sum_i p_i(t) + M\sum_i s_i \label{eq:offline_lp_obj}\\
+\text{s.t.}\quad
+& 0\le p_i(t)\le p_i^{\max}\mathbf{1}_{a_i\le t<d_i}, \label{eq:offline_box}\\
+& \sum_i p_i(t)\le C_t-\hat B_t-\kappa\sigma_t,\quad \forall t, \label{eq:offline_cap}\\
+& \sum_{t=a_i}^{d_i-1}\eta_i p_i(t)\Delta t+s_i\ge E_i,\quad \forall i, \label{eq:offline_energy}\\
+& s_i\ge0,\quad \forall i. \label{eq:offline_slack}
+\end{align}
+Here $M$ is a large penalty coefficient and $s_i$ is the unserved energy slack. This benchmark is cost-oriented and noncausal: it is useful for comparison but is not an online policy. The dual-decomposition and offline ADMM baselines solve related full-information decompositions; they are included to separate the value of offline information from the value of distributed implementation.
 
 \section{Online Lyapunov-ADMM Scheduling}
-\subsection{Deadline-Aware Virtual Queues}
+\subsection{Virtual Queues and Deadline Urgency}
 The remaining demand of EV $i$ is modeled as a virtual queue:
 \begin{equation}
-Q_i(t+1)=\left[Q_i(t)-\eta_i p_i(t)\Delta t\right]^+ .
+Q_i(t+1)=\left[Q_i(t)-\eta_i p_i(t)\Delta t\right]^+ ,
+\label{eq:queue_update}
 \end{equation}
-At arrival, $Q_i(a_i)=E_i$. To represent deadline urgency, define
+with $Q_i(a_i)=E_i$. Define the delivered energy in a slot as
+\begin{equation}
+\mu_i(t)=\eta_i p_i(t)\Delta t .
+\label{eq:service}
+\end{equation}
+To represent deadline urgency, use
 \begin{equation}
 w_i(t)=\frac{1}{d_i-t+\delta},
+\label{eq:urgency}
 \end{equation}
-where $\delta>0$ avoids division by zero. A vehicle with large remaining demand and few slots before departure receives a larger urgency weight.
+where $\delta>0$ avoids division by zero. Vehicles with large remaining demand and fewer slots before departure receive larger service weight.
 
-\subsection{Per-Slot Lyapunov Problem}
-The drift-plus-penalty idea leads to the following per-slot convex problem:
+A practical deadline safety floor is also imposed. Let the minimum power required to keep EV $i$ feasible be
+\begin{equation}
+\ell_i(t)=
+\left[
+\frac{Q_i(t)-\eta_i p_i^{\max}(d_i-t-1)\Delta t}
+{\eta_i\Delta t}
+\right]^+ .
+\label{eq:deadline_floor}
+\end{equation}
+The online problem uses $p_i(t)\ge \min\{p_i^{\max},\ell_i(t)\}$ whenever the EV is active and capacity permits. This floor prevents the controller from postponing charging until the remaining time is insufficient.
+
+\subsection{Drift-Plus-Penalty Derivation}
+For a fixed slot $t$, define a weighted queue Lyapunov surrogate
+\begin{equation}
+L_w(t)=\frac{1}{2}\sum_{i\in\mathcal{N}(t)} w_i(t)Q_i^2(t).
+\label{eq:lyapunov}
+\end{equation}
+Using $([x]^+)^2\le x^2$ and treating $w_i(t)$ as fixed within the slot,
 \begin{align}
-\min_{\mathbf p(t)} \quad
-& V\pi_t\sum_i p_i(t)\Delta t
--\sum_i w_i(t)Q_i(t)\eta_i p_i(t)\Delta t \nonumber\\
-&+V\beta\left(\sum_i p_i(t)-P_{\mathrm{ref}}(t)\right)^2
+Q_i^2(t+1)-Q_i^2(t)
+&\le \mu_i^2(t)-2Q_i(t)\mu_i(t). \label{eq:queue_square}
 \end{align}
-subject to the power and risk-buffered capacity constraints. The first term penalizes charging cost, the second term rewards serving urgent queues, and the third term smooths the aggregate charging load. The parameter $V$ controls the cost-delay trade-off.
-
-A practical deadline safety floor is included. If an EV must receive a minimum charging rate in the current slot to remain feasible before departure, that rate is imposed as a lower bound. This avoids excessive delay when the soft queue term alone is insufficient.
+The one-slot weighted drift therefore satisfies
+\begin{align}
+\Delta_w(t)
+&=L_w(t+1)-L_w(t) \nonumber\\
+&\le B_t-\sum_{i\in\mathcal{N}(t)} w_i(t)Q_i(t)\mu_i(t), \label{eq:drift_bound}
+\end{align}
+where
+\begin{equation}
+B_t=\frac{1}{2}\sum_{i\in\mathcal{N}(t)}w_i(t)\mu_i^2(t)
+\end{equation}
+is bounded because charging powers are bounded. Let the per-slot operational penalty be
+\begin{align}
+C_t^{\mathrm{op}}(\mathbf p)
+&=\pi_t\Delta t\sum_i p_i(t) \nonumber\\
+&\quad+\beta\left(\sum_i p_i(t)-P_{\mathrm{ref}}(t)\right)^2 .
+\label{eq:slot_cost}
+\end{align}
+Dropping bounded and decision-independent terms, minimizing an upper bound of
+\begin{equation}
+\Delta_w(t)+V C_t^{\mathrm{op}}(\mathbf p)
+\label{eq:dpp}
+\end{equation}
+leads to the per-slot problem
+\begin{align}
+\min_{\mathbf p(t)}\quad
+& V\pi_t\Delta t\sum_i p_i(t)
+-\sum_i w_i(t)Q_i(t)\eta_i p_i(t)\Delta t \nonumber\\
+&+V\beta\left(\sum_i p_i(t)-P_{\mathrm{ref}}(t)\right)^2 \label{eq:online_problem}
+\end{align}
+subject to \eqref{eq:box}, \eqref{eq:risk_capacity}, and the deadline floor. The parameter $V$ controls the empirical cost-deadline trade-off.
 
 \subsection{ADMM-Based Distributed Solver}
-For each slot, the problem is written as
+For each slot, write \eqref{eq:online_problem} as
 \begin{equation}
-\min_{\mathbf p,\mathbf z} \sum_i f_i(p_i;t)+g(\mathbf z;t), \quad \mathbf p-\mathbf z=0,
+\min_{\mathbf p,\mathbf z} \sum_i f_i(p_i;t)+g(\mathbf z;t),
+\quad \mathbf p-\mathbf z=0,
+\label{eq:admm_split}
 \end{equation}
-where $f_i$ contains the EV-level price and urgency terms, while $g$ contains the load-smoothing term and the capacity constraint. The scaled ADMM updates are
+where $f_i$ contains the EV-level price and urgency terms, while $g$ contains the smoothing term and the capacity constraint. The scaled ADMM updates are
 \begin{align}
-p_i^{k+1} &= \arg\min_{p_i\in\mathcal P_i} f_i(p_i;t)+\frac{\rho}{2}(p_i-z_i^k+u_i^k)^2,\\
-\mathbf z^{k+1} &= \arg\min_{\mathbf z\in\mathcal Z} g(\mathbf z;t)+\frac{\rho}{2}\|\mathbf p^{k+1}-\mathbf z+\mathbf u^k\|_2^2,\\
-\mathbf u^{k+1} &= \mathbf u^k+\mathbf p^{k+1}-\mathbf z^{k+1}.
+p_i^{k+1} &=
+\arg\min_{p_i\in\mathcal P_i}
+f_i(p_i;t)+\frac{\rho}{2}(p_i-z_i^k+u_i^k)^2, \label{eq:admm_p}\\
+\mathbf z^{k+1} &=
+\arg\min_{\mathbf z\in\mathcal Z}
+g(\mathbf z;t)+\frac{\rho}{2}\|\mathbf p^{k+1}-\mathbf z+\mathbf u^k\|_2^2, \label{eq:admm_z}\\
+\mathbf u^{k+1} &= \mathbf u^k+\mathbf p^{k+1}-\mathbf z^{k+1}. \label{eq:admm_u}
 \end{align}
-The EV-side update uses local queue and deadline information, while the aggregator-side update enforces the transformer constraint and load-smoothing objective.
+The EV-side update uses local queue and charging-limit information. The aggregator-side update enforces the transformer constraint and the load-smoothing term.
 
-\subsection{Theoretical Properties}
-\textbf{Proposition 1 (Per-slot convexity):} For a fixed active EV set and fixed forecasts at slot $t$, the per-slot problem is a convex program when $\beta\ge0$.
+\subsection{Properties and Implementation}
+\textbf{Proposition 1 (Per-slot convexity):}
+For a fixed active EV set and fixed forecasts at slot $t$, the per-slot problem is convex when $\beta\ge0$.
 
-\emph{Proof:} The price and queue-service terms are linear in $\mathbf p(t)$. The smoothing term is a nonnegative quadratic function when $\beta\ge0$. The box constraints and the risk-buffered transformer constraint are affine. Hence the feasible set is convex and the objective is convex.
+\emph{Proof:}
+The price and queue-service terms are linear in $\mathbf p(t)$. The smoothing term is a nonnegative quadratic function when $\beta\ge0$. The box, lower-bound, and risk-buffered transformer constraints are affine. Hence the feasible set is convex and the objective is convex.
 
-\textbf{Proposition 2 (Per-slot ADMM convergence):} If the split per-slot problem is feasible, $\rho>0$, and the EV-side and aggregator-side feasible sets are closed and convex, the two-block ADMM iterations converge to a primal-dual solution of the per-slot convex problem under the standard ADMM assumptions \cite{Boyd2011,Eckstein1992}.
+\textbf{Proposition 2 (Per-slot ADMM convergence):}
+If the split per-slot problem is feasible, $\rho>0$, and the EV-side and aggregator-side feasible sets are closed and convex, the two-block ADMM iterations converge to a primal-dual solution under the standard ADMM assumptions \cite{Boyd2011,Eckstein1992}.
 
-ADMM is not introduced to change the optimization objective. Its role is implementation-oriented: EV-side updates use local queue states and charging limits, while the aggregator enforces the global transformer constraint. This separates local information from the coupled grid constraint and reduces the need for a fully centralized per-slot solve.
+ADMM is not introduced to change the optimization objective. Its role is implementation-oriented: EV-side updates use local queue states and charging limits, while the aggregator enforces the global transformer constraint. The Lyapunov interpretation follows the usual drift-plus-penalty intuition \cite{Neely2010}; this paper uses it to guide tuning and does not claim a new closed-form $O(1/V)$ or $O(V)$ bound.
 
-\textbf{Lyapunov interpretation:} The parameter $V$ follows the usual drift-plus-penalty interpretation \cite{Neely2010}: larger $V$ gives more weight to cost minimization, while smaller $V$ emphasizes queue service and deadline pressure. The analysis is used to guide tuning and to interpret the empirical cost-deadline trade-off; no new closed-form $O(1/V)$ or $O(V)$ bound is claimed.
-
-\subsection{Online Implementation}
-\begin{table}[t]
+\begin{table}[!t]
 \centering
-\caption{Online Lyapunov-ADMM Charging Procedure}
+\caption{Online Lyapunov-ADMM Procedure}
 \label{tab:algorithm}
-\begin{tabular}{p{0.96\linewidth}}
+\begin{tabular}{p{0.92\columnwidth}}
 \toprule
 \textbf{Input:} $V,\beta,\kappa,\rho$ and stopping tolerance.\\
-\textbf{For each slot $t$:} observe active EVs, current price, and base-load forecast; update remaining-demand queues and urgency weights; compute the risk-buffered capacity $C_t-\hat B_t-\kappa\sigma_t$; solve the per-slot convex problem by ADMM using EV local updates and aggregator projection; apply the accepted charging powers; update queues and record realized capacity violation using actual base load.\\
+\textbf{At each slot $t$:} observe active EVs, current price, and base-load forecast; update $Q_i(t)$ and $w_i(t)$; compute the risk-buffered capacity $C_t-\hat B_t-\kappa\sigma_t$; impose deadline floors; solve \eqref{eq:online_problem} by ADMM; apply accepted powers; update queues and record realized capacity violation using $B_t$.\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The procedure is causal: it uses current EV states, current price, and current load forecast, but does not require future vehicle arrivals. This distinguishes it operationally from the offline centralized LP and offline ADMM baselines.
+\section{Evaluation Metrics}
+The experiments report the following metrics. Charging cost is
+\begin{equation}
+J_{\mathrm{cost}}=\sum_{t=1}^{T}\pi_t\Delta t\sum_i p_i(t).
+\label{eq:metric_cost}
+\end{equation}
+Total load and peak load are
+\begin{align}
+L_t^{\mathrm{tot}} &= B_t+\sum_i p_i(t), \label{eq:total_load}\\
+P_{\mathrm{peak}} &= \max_t L_t^{\mathrm{tot}} . \label{eq:peak}
+\end{align}
+The unserved energy ratio is
+\begin{equation}
+R_{\mathrm{uns}}=
+\frac{\sum_i Q_i(d_i)}{\sum_i E_i}.
+\label{eq:unserved}
+\end{equation}
+The practical deadline violation rate uses a small tolerance $\epsilon_Q$:
+\begin{equation}
+R_{\mathrm{dl}}=
+\frac{1}{N}\sum_i \mathbf{1}\{Q_i(d_i)>\epsilon_Q\}.
+\label{eq:deadline_violation}
+\end{equation}
+The realized capacity violation rate is
+\begin{equation}
+R_{\mathrm{cap}}=
+\frac{1}{T}\sum_t
+\mathbf{1}\left\{B_t+\sum_i p_i(t)>C_t\right\}.
+\label{eq:capacity_violation}
+\end{equation}
+Worst-user satisfaction is
+\begin{equation}
+S_{\min}=\min_i\left(1-\frac{Q_i(d_i)}{E_i}\right).
+\label{eq:worst_satisfaction}
+\end{equation}
+Runtime is measured on the local implementation and should be interpreted as an implementation-level indicator rather than a hardware-independent complexity bound.
 
 \section{Numerical Experiments}
 \subsection{Experimental Setup}
-The simulation uses a 24-hour horizon with 48 half-hour slots and a default fleet size of 50 EVs. The controlled sweeps vary transformer capacity, the Lyapunov parameter $V$, the risk-buffer parameter $\kappa$, random seeds, and fleet size. Additional tests use workplace-style and public-data profiles. The public-data profile uses real arrival times, departure times, and delivered energy from the 4TU/ElaadNL large office parking-lot dataset \cite{DeBont2025ElaadOffice}; electricity prices and base-load uncertainty are generated by the same evaluation framework. Metrics include charging cost, peak load, deadline violation, unserved energy, runtime, and capacity violation.
+The simulation uses a 24-hour horizon with 48 half-hour slots and a default fleet size of 50 EVs. The controlled sweeps vary transformer capacity, the Lyapunov parameter $V$, the risk-buffer parameter $\kappa$, random seeds, and fleet size. Additional tests use workplace-style and public-data profiles. The public-data profile uses real arrival times, departure times, and delivered energy from the 4TU/ElaadNL large office parking-lot dataset \cite{DeBont2025ElaadOffice}; electricity prices and base-load uncertainty are generated by the same evaluation framework.
 
-Six methods are compared: uncontrolled capped charging, greedy deadline-price charging, offline centralized linear programming (LP), dual decomposition, offline ADMM, and the proposed online Lyapunov-ADMM. The offline centralized LP is treated as an ideal lower-cost benchmark because it uses complete future information.
+Six methods are compared: uncontrolled capped charging, greedy deadline-price charging, offline centralized LP, dual decomposition, offline ADMM, and online Lyapunov-ADMM. Table~\ref{tab:method_attr} summarizes their information and deployment assumptions.
 
-\begin{table}[t]
+\begin{table}[!t]
 \centering
 \caption{Operational Characteristics of Compared Methods}
 \label{tab:method_attr}
 \begin{tabular}{lcccc}
 \toprule
-Method & Future info & Global data & Online & Distributed \\
+Method & Future & Global & Online & Dist. \\
 \midrule
-Uncontrolled capped & No & No & Yes & Yes \\
-Greedy deadline-price & No & Limited & Yes & Limited \\
-Offline centralized LP & Yes & Yes & No & No \\
+Uncontrolled & No & No & Yes & Yes \\
+Greedy & No & Limited & Yes & Limited \\
+Offline LP & Yes & Yes & No & No \\
 Dual decomposition & Yes & Yes & No & Yes \\
 Offline ADMM & Yes & Yes & No & Yes \\
-Online Lyapunov-ADMM & No & Limited & Yes & Yes \\
+Online L-ADMM & No & Limited & Yes & Yes \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Baseline Comparison}
-\begin{table}[t]
+\subsection{Question 1: Cost, Peak Load, and Deployment Assumptions}
+Table~\ref{tab:baseline} and Fig.~\ref{fig:tradeoffs}(a) summarize the 30-seed baseline comparison. Offline centralized LP and offline ADMM obtain the lowest costs, as expected under full future information. Online Lyapunov-ADMM is more expensive, but it reduces the average peak load from 186.34 kW to 163.28 kW relative to offline LP and removes capacity violations in this setting. The result supports a deployment-oriented interpretation of the online method rather than a cost-dominance claim.
+
+\begin{table}[!t]
 \centering
 \caption{Baseline Statistics over 30 Random Seeds}
 \label{tab:baseline}
 \begin{tabular}{lrrrr}
 \toprule
-Method & Cost & Peak kW & Unserved & Cap. viol. \\
+Method & Cost & Peak & Unserved & Cap. viol. \\
 \midrule
-Offline centralized LP & 752.98 & 186.34 & 0.000000 & 0.0076 \\
+Offline LP & 752.98 & 186.34 & 0.000000 & 0.0076 \\
 Offline ADMM & 754.73 & 185.59 & 0.000000 & 0.0069 \\
-Dual decomposition & 753.88 & 185.60 & 0.000679 & 0.0056 \\
-Greedy deadline-price & 806.48 & 184.06 & 0.000836 & 0.0028 \\
-Uncontrolled capped & 829.55 & 175.88 & 0.000006 & 0.0028 \\
-Online Lyapunov-ADMM & 825.51 & 163.28 & 0.000000 & 0.0000 \\
+Dual decomp. & 753.88 & 185.60 & 0.000679 & 0.0056 \\
+Greedy & 806.48 & 184.06 & 0.000836 & 0.0028 \\
+Uncontrolled & 829.55 & 175.88 & 0.000006 & 0.0028 \\
+Online L-ADMM & 825.51 & 163.28 & 0.000000 & 0.0000 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{figure}[t]
+\begin{figure*}[!t]
 \centering
-\includegraphics[width=0.98\linewidth]{figures/summary_tradeoffs.png}
-\caption{Key empirical trade-offs. (a) The proposed online method is not the lowest-cost method, but it reduces peak load compared with offline cost-oriented baselines. (b) Increasing $V$ lowers cost until deadline violations appear, illustrating the cost-deadline tuning role of the Lyapunov parameter.}
+\includegraphics[width=0.82\textwidth]{figures/summary_tradeoffs.pdf}
+\caption{Baseline and Lyapunov-parameter trade-offs. (a) Online Lyapunov-ADMM is not the lowest-cost method, but it reduces peak load compared with full-information cost-oriented baselines. (b) Increasing $V$ lowers cost until deadline violations appear.}
 \label{fig:tradeoffs}
-\end{figure}
+\end{figure*}
 
-Table~\ref{tab:baseline} and Fig.~\ref{fig:tradeoffs}(a) summarize the baseline comparison. Offline centralized LP and offline ADMM obtain the lowest cost, as expected under full future information. Online Lyapunov-ADMM is more expensive, but it reduces the average peak load from 186.34 kW to 163.28 kW relative to offline LP and removes capacity violations in this setting. The result supports a deployment-oriented interpretation of the online method rather than a cost-dominance claim.
+\subsection{Question 2: Capacity Pressure and Risk Buffer}
+Fig.~\ref{fig:capacity} examines transformer capacity pressure. As the capacity factor decreases, the tested methods diverge. Offline cost-oriented baselines and greedy charging tend to concentrate load in fewer slots, while online Lyapunov-ADMM gives the most stable peak and service behavior in the tight cases. This does not imply universal dominance; it shows that the online policy is more conservative under capacity stress.
 
-The workplace-style sensitivity profile shows the same qualitative pattern: offline LP has lower cost, while online Lyapunov-ADMM lowers peak load and keeps capacity violation at zero. This case is used only to test scenario sensitivity.
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/capacity_pressure.pdf}
+\caption{Capacity-pressure sweep. Smaller capacity factors represent tighter transformer margins.}
+\label{fig:capacity}
+\end{figure*}
 
-\subsection{Public Charging-Data Check}
-An external-validity check is conducted using five high-activity days from the 4TU/ElaadNL office parking-lot dataset. Each day uses up to 50 real sessions; start time, end time, and delivered energy are taken from the public CSV, while price and base-load uncertainty are generated by the same evaluation framework. With $V=0.8$ and $\kappa=1.0$, online Lyapunov-ADMM reduces mean peak load from 208.26 kW to 198.49 kW and lowers capacity violation from 3.8\% to 1.2\% relative to offline LP, but its deadline violation rate is 10.8\%. The result indicates that public office-parking sessions can be tighter than the synthetic setting and that $V$ and $\kappa$ must be tuned jointly.
+Fig.~\ref{fig:risk} evaluates $\kappa$ under aligned and inverted price-load relationships. Increasing $\kappa$ reduces capacity violation in both cases. Its cost impact depends on whether high-load periods coincide with high-price periods; therefore, the robust conclusion is safety improvement rather than guaranteed cost reduction.
 
-\subsection{Capacity Pressure}
-The capacity-pressure sweep examines whether the controller remains usable as transformer capacity tightens. Dual decomposition and greedy charging may leave nonzero unserved energy under tight capacity, while online Lyapunov-ADMM gives the most stable peak and capacity-safety behavior in the tested cases.
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/risk_buffer.pdf}
+\caption{Risk-buffer sensitivity under different price-load relationships. The safety effect of $\kappa$ is consistent, while the cost effect depends on price-load correlation.}
+\label{fig:risk}
+\end{figure*}
 
-\subsection{Lyapunov Parameter and Risk Buffer}
+\subsection{Question 3: Cost-Deadline Tuning and Component Roles}
 Fig.~\ref{fig:tradeoffs}(b) shows the effect of $V$. Small values emphasize deadline satisfaction, while large values give more weight to cost. In the tight-capacity case, $V=0.8$ to $1.2$ is a reasonable operating region; larger values reduce cost but create deadline violations.
 
-The risk-buffer sweep evaluates $\kappa$ under aligned and inverted price-load relationships. Increasing $\kappa$ reduces capacity violation in both cases, but its cost impact depends on whether high-load periods coincide with high-price periods. The robust conclusion is safety improvement, not guaranteed cost reduction.
+Table~\ref{tab:ablation} and Fig.~\ref{fig:ablation} separate the roles of the main components. Removing the Lyapunov queue lowers cost but increases unserved energy, so the apparent saving comes from reduced service. Removing the deadline floor also worsens service. The centralized per-slot variant has comparable service quality, but it is not distributed and is slower in the tested implementation. These results indicate that Lyapunov queues handle online urgency, the risk buffer handles capacity uncertainty, and ADMM provides the distributed implementation structure.
 
-\subsection{Ablation Study}
-\begin{table}[t]
+\begin{table*}[!t]
 \centering
 \caption{Ablation Results under Tight Capacity}
 \label{tab:ablation}
 \begin{tabular}{lrrrr}
 \toprule
-Variant & Cost & Peak kW & Unserved & Worst sat. \\
+Variant & Cost & Peak & Unserved & Worst sat. \\
 \midrule
 Full online L-ADMM & 782.66 & 149.92 & 0.0076 & 0.965 \\
 Centralized per-slot & 789.11 & 151.79 & 0.0037 & 0.983 \\
 No deadline floor & 775.79 & 149.21 & 0.0181 & 0.867 \\
 No Lyapunov queue & 712.49 & 150.46 & 0.0620 & 0.817 \\
 No risk buffer & 791.58 & 153.12 & 0.0006 & 0.997 \\
-Greedy deadline-price & 773.12 & 154.49 & 0.0172 & 0.840 \\
+Greedy & 773.12 & 154.49 & 0.0172 & 0.840 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/ablation.pdf}
+\caption{Ablation comparison under tight capacity. The no-queue variant saves cost by leaving more energy unserved; the centralized per-slot variant removes ADMM distribution and increases runtime.}
+\label{fig:ablation}
+\end{figure*}
+
+\subsection{Question 4: Scalability and Public-Session Check}
+Fig.~\ref{fig:scalability} compares runtime across fleet sizes. Offline ADMM reaches about 33 seconds for 500 EVs in the implemented simulation. Online Lyapunov-ADMM remains fast because it solves the current per-slot problem rather than the full-day scheduling problem. A larger fast check for 1000 and 2000 EVs shows that centralized LP remains computationally efficient in these synthetic LP cases; its limitation is information dependence, not runtime alone.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/scalability_runtime.pdf}
+\caption{Runtime scalability. The online method solves a per-slot problem, while offline methods solve full-horizon problems with future information.}
+\label{fig:scalability}
+\end{figure*}
+
+An external-validity check is conducted using five high-activity days from the 4TU/ElaadNL office parking-lot dataset. Each day uses up to 50 real sessions; start time, end time, and delivered energy are taken from the public CSV, while price and base-load uncertainty are generated by the same evaluation framework. Table~\ref{tab:public_data} and Fig.~\ref{fig:public_data} show that online Lyapunov-ADMM reduces mean peak load from 208.26 kW to 198.49 kW and lowers capacity violation from 3.8\% to 1.2\% relative to offline LP, but its deadline violation rate is 10.8\%. The result indicates that public office-parking sessions can be tighter than the synthetic setting and that $V$ and $\kappa$ must be tuned jointly.
+
+\begin{table}[!t]
+\centering
+\caption{Public Charging-Session Check over Five High-Activity Days}
+\label{tab:public_data}
+\begin{tabular}{lrrrr}
+\toprule
+Method & Cost & Peak & Deadline & Cap. viol. \\
+\midrule
+Offline LP & 1002.02 & 208.26 & 0.000 & 0.038 \\
+Offline ADMM & 1003.55 & 208.28 & 0.000 & 0.033 \\
+Dual decomp. & 999.98 & 207.92 & 0.048 & 0.025 \\
+Greedy & 1040.37 & 208.11 & 0.144 & 0.033 \\
+Uncontrolled & 1035.13 & 211.17 & 0.228 & 0.062 \\
+Online L-ADMM & 1048.30 & 198.49 & 0.108 & 0.012 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:ablation} separates the roles of the main components. Removing the Lyapunov queue lowers cost but increases unserved energy, so the apparent saving comes from reduced service. Removing the deadline floor also worsens service. The centralized per-slot variant has comparable service quality, but it is not distributed and is slower in the tested implementation. These results indicate that Lyapunov queues handle online urgency, the risk buffer handles capacity uncertainty, and ADMM provides the distributed implementation structure.
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/public_data_check.pdf}
+\caption{Public-data check using real session timing and delivered energy. Price and base-load uncertainty are still generated by the evaluation framework.}
+\label{fig:public_data}
+\end{figure*}
 
-\subsection{Scalability}
-The scalability sweep compares EV populations from 50 to 500 vehicles. Offline ADMM reaches about 33 seconds for 500 EVs in the implemented simulation. Online Lyapunov-ADMM remains fast because it solves the current per-slot problem rather than the full-day scheduling problem.
-
-A larger fast scalability check for 1000 and 2000 EVs shows that centralized LP remains computationally efficient in these synthetic LP cases. Its limitation is not runtime alone, but its dependence on complete future information and global data. Online Lyapunov-ADMM runs in about 0.01 s in both large cases and keeps realized capacity violation at zero.
-
+\clearpage
 \section{Discussion}
 The experiments indicate that the compared methods serve different operational purposes. Offline centralized LP and offline ADMM are cost-oriented benchmarks under full future information. Online Lyapunov-ADMM instead provides an online, distributed, and risk-aware trade-off with lower peak load and improved capacity safety.
 
 The method has several limitations. The public-data check uses real charging-session times and energy demands, but the price and base-load uncertainty signals are simulated; it is therefore an external-validity check rather than a full field deployment. The risk model uses a simple safety margin instead of a full chance-constrained formulation. Battery degradation, vehicle-to-grid operation, renewable generation uncertainty, and asynchronous communication are not considered. These limitations define directions for future work.
 
 \section{Conclusion}
-This paper presented an online risk-aware distributed EV charging framework that combines deadline-aware virtual queues, Lyapunov drift-plus-penalty control, and ADMM-based per-slot coordination. The method targets causal scheduling rather than full-information cost optimality. Numerical experiments show that it can reduce peak load and improve capacity safety, while the public-session check indicates that office-parking data requires careful tuning of cost, deadline, and risk parameters. Future work will extend the model to battery degradation, renewable uncertainty, and asynchronous distributed implementation.
+This paper presented an online risk-aware distributed EV charging framework that combines deadline-aware virtual queues, Lyapunov drift-plus-penalty control, and ADMM-based per-slot coordination. The method targets causal scheduling rather than full-information cost optimality. The expanded experiments show that it can reduce peak load and improve capacity safety, while public-session checks indicate that office-parking data requires careful tuning of cost, deadline, and risk parameters. Future work will extend the model to battery degradation, renewable uncertainty, and asynchronous distributed implementation.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

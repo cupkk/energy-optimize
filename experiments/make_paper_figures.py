@@ -7,6 +7,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 
@@ -36,16 +37,80 @@ def configure_style() -> None:
             "axes.linewidth": 0.6,
             "grid.linewidth": 0.35,
             "lines.linewidth": 1.4,
+            "legend.frameon": False,
             "savefig.bbox": "tight",
         }
     )
 
 
-def build_summary_figure() -> None:
-    configure_style()
+def figure_dir() -> Path:
     fig_dir = ROOT / "paper" / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
+    return fig_dir
 
+
+def save_figure(fig: plt.Figure, name: str) -> None:
+    fig_dir = figure_dir()
+    fig.savefig(fig_dir / f"{name}.pdf", facecolor="white", transparent=False)
+    fig.savefig(fig_dir / f"{name}.png", dpi=300, facecolor="white", transparent=False)
+    plt.close(fig)
+
+
+def finish_axes(ax: plt.Axes) -> None:
+    ax.grid(True, axis="both", alpha=0.28)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+def build_framework_diagram() -> None:
+    configure_style()
+    fig, ax = plt.subplots(figsize=(7.1, 2.55))
+    ax.axis("off")
+
+    boxes = [
+        ("Active EVs\n$(Q_i,d_i,p_i^{\\max})$", 0.04, 0.58, 0.16, 0.22, "#e8eef5"),
+        ("Queue and\nurgency update", 0.25, 0.58, 0.16, 0.22, "#eef3e8"),
+        ("EV local\nADMM update", 0.46, 0.58, 0.16, 0.22, "#f4efe8"),
+        ("Aggregator\nprojection", 0.67, 0.58, 0.16, 0.22, "#f2e8ec"),
+        ("Charging action\nand state update", 0.46, 0.18, 0.16, 0.22, "#e9f2f2"),
+    ]
+    for text, x, y, w, h, color in boxes:
+        rect = plt.Rectangle((x, y), w, h, facecolor=color, edgecolor="#444444", linewidth=0.7)
+        ax.add_patch(rect)
+        ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=8)
+
+    arrows = [
+        ((0.20, 0.69), (0.25, 0.69)),
+        ((0.41, 0.69), (0.46, 0.69)),
+        ((0.62, 0.69), (0.67, 0.69)),
+        ((0.75, 0.58), (0.56, 0.40)),
+        ((0.46, 0.29), (0.20, 0.58)),
+    ]
+    for start, end in arrows:
+        ax.annotate("", xy=end, xytext=start, arrowprops={"arrowstyle": "->", "lw": 0.9, "color": "#333333"})
+
+    ax.text(
+        0.75,
+        0.42,
+        "Risk-buffered capacity:\n$\\hat B_t+\\kappa\\sigma_t+\\sum_i p_i(t)\\leq C_t$",
+        ha="center",
+        va="center",
+        fontsize=7.4,
+        color="#333333",
+    )
+    ax.text(
+        0.50,
+        0.93,
+        "Per-slot distributed coordination inside an online rolling horizon",
+        ha="center",
+        va="center",
+        fontsize=8.5,
+    )
+    save_figure(fig, "framework_diagram")
+
+
+def build_summary_figure() -> None:
+    configure_style()
     baseline = pd.read_csv(ROOT / "outputs" / "multiseed_base_30" / "multiseed_base_summary.csv")
     v_sweep = pd.read_csv(ROOT / "outputs" / "tight_v_sweep_refined" / "lyapunov_v_sweep.csv")
 
@@ -117,9 +182,167 @@ def build_summary_figure() -> None:
     ax.legend(handles, labels, loc="upper right", frameon=False)
 
     fig.tight_layout(w_pad=2.0)
-    fig.savefig(fig_dir / "summary_tradeoffs.pdf", facecolor="white", transparent=False)
-    fig.savefig(fig_dir / "summary_tradeoffs.png", dpi=300, facecolor="white", transparent=False)
+    save_figure(fig, "summary_tradeoffs")
+
+
+def build_capacity_pressure_figure() -> None:
+    configure_style()
+    df = pd.read_csv(ROOT / "outputs" / "capacity_sweep_v08" / "capacity_sweep_summary.csv")
+    methods = ["offline_centralized_lp", "greedy_deadline_price", "dual_decomposition", "online_lyapunov_admm"]
+    colors = {
+        "offline_centralized_lp": "#222222",
+        "greedy_deadline_price": "#777777",
+        "dual_decomposition": "#8c6d31",
+        "online_lyapunov_admm": "#1f4e79",
+    }
+    fig, axes = plt.subplots(1, 2, figsize=(6.7, 2.45), sharex=True)
+    for method in methods:
+        sub = df[df["method"] == method].sort_values("capacity_factor")
+        label = METHOD_LABELS.get(method, method)
+        axes[0].plot(sub["capacity_factor"], sub["peak_total_load_kw"], marker="o", markersize=3.2, color=colors[method], label=label)
+        axes[1].plot(sub["capacity_factor"], sub["unserved_energy_ratio"], marker="o", markersize=3.2, color=colors[method], label=label)
+    axes[0].set_title("(a) Peak load")
+    axes[0].set_ylabel("Peak load (kW)")
+    axes[1].set_title("(b) Unserved energy")
+    axes[1].set_ylabel("Unserved ratio")
+    for ax in axes:
+        ax.set_xlabel("Capacity factor")
+        ax.invert_xaxis()
+        finish_axes(ax)
+    axes[1].legend(loc="upper left", fontsize=6.6)
+    fig.tight_layout(w_pad=2.2)
+    save_figure(fig, "capacity_pressure")
+
+
+def build_risk_buffer_figure() -> None:
+    configure_style()
+    df = pd.read_csv(ROOT / "outputs" / "risk_correlation" / "risk_correlation_sweep.csv")
+    fig, axes = plt.subplots(1, 2, figsize=(6.7, 2.45), sharex=True)
+    legend_handles = None
+    for ax, mode in zip(axes, ["aligned", "inverted"]):
+        sub = df[df["price_load_mode"] == mode].sort_values("kappa")
+        ax2 = ax.twinx()
+        line1 = ax.plot(sub["kappa"], sub["capacity_violation_rate"], color="#b23a48", marker="s", markersize=3.4, label="Cap. violation")[0]
+        line2 = ax2.plot(sub["kappa"], sub["total_cost"], color="#1f4e79", marker="o", markersize=3.4, label="Cost")[0]
+        if legend_handles is None:
+            legend_handles = [line1, line2]
+        ax.set_title(f"({chr(97 + list(['aligned', 'inverted']).index(mode))}) {mode} price-load")
+        ax.set_xlabel("Risk buffer $\\kappa$")
+        ax.set_ylabel("Capacity violation", color="#b23a48")
+        ax2.set_ylabel("Total cost", color="#1f4e79")
+        ax.tick_params(axis="y", colors="#b23a48")
+        ax2.tick_params(axis="y", colors="#1f4e79")
+        finish_axes(ax)
+        ax2.spines["top"].set_visible(False)
+    axes[0].legend(legend_handles, ["Cap. violation", "Cost"], loc="upper right", fontsize=6.6)
+    fig.tight_layout(w_pad=2.2)
+    save_figure(fig, "risk_buffer")
+
+
+def build_ablation_figure() -> None:
+    configure_style()
+    df = pd.read_csv(ROOT / "outputs" / "ablation_3_v08" / "ablation_summary.csv")
+    order = [
+        "full_online_ladmm",
+        "no_deadline_floor",
+        "no_lyapunov_queue",
+        "no_risk_buffer",
+        "online_centralized_slot",
+        "greedy_deadline_price",
+    ]
+    labels = ["Full", "No floor", "No queue", "No buffer", "Centralized", "Greedy"]
+    sub = df.set_index("method").loc[order].reset_index()
+    x = np.arange(len(order))
+    fig, ax = plt.subplots(figsize=(6.7, 2.55))
+    ax2 = ax.twinx()
+    bars = ax.bar(x - 0.18, sub["unserved_energy_ratio_mean"], width=0.36, color="#b23a48", alpha=0.82, label="Unserved")
+    ax2.bar(x + 0.18, sub["runtime_s_mean"], width=0.36, color="#1f4e79", alpha=0.82, label="Runtime")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=18, ha="right")
+    ax.set_ylabel("Unserved ratio", color="#b23a48")
+    ax2.set_ylabel("Runtime (s)", color="#1f4e79")
+    ax.tick_params(axis="y", colors="#b23a48")
+    ax2.tick_params(axis="y", colors="#1f4e79")
+    ax.set_title("Ablation under tight capacity")
+    finish_axes(ax)
+    ax2.spines["top"].set_visible(False)
+    ax.legend([bars, ax2.containers[0]], ["Unserved", "Runtime"], loc="upper left", fontsize=6.8)
+    fig.tight_layout()
+    save_figure(fig, "ablation")
+
+
+def build_scalability_figure() -> None:
+    configure_style()
+    df = pd.read_csv(ROOT / "outputs" / "scalability_sweep_with_baselines" / "scalability_sweep_summary.csv")
+    large = pd.read_csv(ROOT / "outputs" / "scalability_fast_large" / "scalability_fast_summary.csv")
+    methods = ["offline_centralized_lp", "offline_admm", "dual_decomposition", "online_lyapunov_admm"]
+    colors = {
+        "offline_centralized_lp": "#222222",
+        "offline_admm": "#7a7a7a",
+        "dual_decomposition": "#8c6d31",
+        "online_lyapunov_admm": "#1f4e79",
+    }
+    fig, axes = plt.subplots(1, 2, figsize=(6.7, 2.45))
+    for method in methods:
+        sub = df[df["method"] == method].sort_values("n_ev")
+        axes[0].plot(sub["n_ev"], sub["runtime_s"], marker="o", markersize=3.2, color=colors[method], label=METHOD_LABELS.get(method, method))
+    axes[0].set_yscale("log")
+    axes[0].set_title("(a) Six-method sweep")
+    axes[0].set_xlabel("Number of EVs")
+    axes[0].set_ylabel("Runtime (s, log)")
+    finish_axes(axes[0])
+    axes[0].legend(loc="upper left", fontsize=6.2)
+
+    for method in ["offline_centralized_lp", "online_lyapunov_admm", "greedy_deadline_price"]:
+        sub = large[large["method"] == method].sort_values("n_ev")
+        axes[1].plot(sub["n_ev"], sub["runtime_s"], marker="o", markersize=3.2, label=METHOD_LABELS.get(method, method))
+    axes[1].set_yscale("log")
+    axes[1].set_title("(b) Fast large-scale check")
+    axes[1].set_xlabel("Number of EVs")
+    axes[1].set_ylabel("Runtime (s, log)")
+    finish_axes(axes[1])
+    axes[1].legend(loc="upper left", fontsize=6.2)
+    fig.tight_layout(w_pad=2.0)
+    save_figure(fig, "scalability_runtime")
+
+
+def build_public_data_figure() -> None:
+    configure_style()
+    df = pd.read_csv(ROOT / "outputs" / "real_elaadnl_multiday_5" / "real_data_multiday_summary.csv")
+    order = ["offline_centralized_lp", "offline_admm", "greedy_deadline_price", "online_lyapunov_admm", "uncontrolled_capped"]
+    labels = [METHOD_LABELS.get(m, m) for m in order]
+    sub = df.set_index("method").loc[order].reset_index()
+    x = np.arange(len(order))
+    fig, axes = plt.subplots(1, 2, figsize=(6.7, 2.45))
+    axes[0].bar(x, sub["peak_total_load_kw_mean"], color="#1f4e79", alpha=0.86)
+    axes[0].set_title("(a) Mean peak load")
+    axes[0].set_ylabel("Peak load (kW)")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(labels, rotation=22, ha="right")
+    finish_axes(axes[0])
+
+    width = 0.36
+    axes[1].bar(x - width / 2, sub["capacity_violation_rate_mean"], width=width, color="#b23a48", alpha=0.82, label="Cap. viol.")
+    axes[1].bar(x + width / 2, sub["deadline_violation_rate_mean"], width=width, color="#7a7a7a", alpha=0.82, label="Deadline")
+    axes[1].set_title("(b) Violation rates")
+    axes[1].set_ylabel("Rate")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(labels, rotation=22, ha="right")
+    axes[1].legend(loc="upper left", fontsize=6.7)
+    finish_axes(axes[1])
+    fig.tight_layout(w_pad=1.8)
+    save_figure(fig, "public_data_check")
+
+
+def build_all_figures() -> None:
+    build_framework_diagram()
+    build_summary_figure()
+    build_capacity_pressure_figure()
+    build_risk_buffer_figure()
+    build_ablation_figure()
+    build_scalability_figure()
+    build_public_data_figure()
 
 
 if __name__ == "__main__":
-    build_summary_figure()
+    build_all_figures()

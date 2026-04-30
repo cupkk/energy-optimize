@@ -18,6 +18,7 @@ Analyze the project materials and plan the remaining work for an SCI-style paper
 | 9. Reconcile remaining recommendations | complete | 30-seed baseline, workplace profile, method-characteristics table, remaining-task matrix |
 | 10. Close feasible experiment gaps | complete | Large-scale fast scalability and centralized per-slot ablation |
 | 11. Close external validation and submission gaps | complete | 4TU/ElaadNL public-data check, 45 references, 8-page PDF, tracked pyc cleanup |
+| 12. Reviewer-facing paper polish | complete | Conservative claims, formal propositions, compact algorithm table, and one clean summary figure |
 
 ## Experiment-First Execution Plan
 
@@ -73,7 +74,9 @@ Analyze the project materials and plan the remaining work for an SCI-style paper
 
 - The baseline evidence has been upgraded again from 10 seeds to 30 seeds. Workplace-profile results are used only as sensitivity evidence, not as a claim of real-data validation.
 - Public-data validation uses the 4TU/ElaadNL office parking dataset as an external-validity check. It uses real session timing and energy, but simulated price and base-load uncertainty, so it should not be described as a full field deployment.
-- To satisfy the 8-page single-column constraint with 45 references, the final course-report draft keeps core tables in the paper and leaves detailed figures in `outputs/` for presentation and extended versions.
+- To satisfy the 8-page single-column constraint with 45 references, the final course-report draft keeps core tables plus one compact summary figure in the paper, while leaving detailed sweep figures in `outputs/` for presentation and extended versions.
+- The public-data result should be described as an external-validity check using real session timing and energy, not as a full real-world charging-station validation.
+- The main method should be described as a deployment-oriented online scheduler. It is not designed to dominate offline full-information benchmarks in cost; its value is online operation, lower peak load, capacity safety, and distributed coordination.
 
 ## Errors Encountered
 

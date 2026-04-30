@@ -47,3 +47,8 @@
 - Downloaded local Tectonic 0.16.9 for PDF compilation, compiled `paper/build/main.pdf`, and verified the latest PDF has 8 pages.
 - Rendered PDF page 1 and page 8 previews with ImageMagick/Ghostscript; no visible clipping or reference overflow was found.
 - Removed the tracked Python cache file from git tracking with `git rm --cached`; `.gitignore` now ignores `data/raw/` and `tools/tectonic/`.
+- Accepted the latest review suggestions as the paper-editing rule set: keep the public-data result as an external-validity check, avoid claims of full real-world deployment, and frame Online Lyapunov-ADMM as a deployment-oriented trade-off rather than a cost-dominating offline optimizer.
+- Added `experiments/make_paper_figures.py` to generate a clean reviewer-facing summary figure under `paper/figures/summary_tradeoffs.png` and `.pdf`.
+- Updated `paper/main.tex` with formal Proposition-style theoretical properties, a compact Algorithm-style online procedure table, conservative abstract/conclusion wording, and one compact two-panel trade-off figure.
+- Recompiled `paper/build/main.pdf`; it remains 8 pages. Rendered page 1, page 5, and page 8 previews after the figure update; title/abstract, figure placement, and references are visually readable.
+- Performed a full English pass on `paper/main.tex`: reduced repeated deployment-trade-off wording, replaced informal phrases with more academic wording, tightened the public-data boundary, and recompiled the PDF. The polished PDF remains 8 pages with all 45 citations resolved.

@@ -12,6 +12,9 @@ Analyze the project materials and plan the remaining work for an SCI-style paper
 | 3. Compare existing first-version materials | complete | Gaps between first draft and final SCI structure |
 | 4. Define experiment completion plan | complete | Experiments, metrics, figures, tables, and execution order |
 | 5. Define paper-writing plan | complete | Chapter-by-chapter writing sequence after experiments |
+| 6. Strengthen experiment credibility | complete | Multi-seed statistics, stronger metrics, ablation, risk correlation, ADMM tuning |
+| 7. Improve reproducibility packaging | complete | README, .gitignore, pinned requirements, final commands |
+| 8. Convert stable results into paper-ready evidence | complete | LaTeX result tables, stronger related work, basic method properties, Chinese figure/table interpretation index |
 
 ## Experiment-First Execution Plan
 
@@ -61,6 +64,9 @@ Analyze the project materials and plan the remaining work for an SCI-style paper
 - The final paper direction should follow the final SCI document, not the first-version offline ADMM structure.
 - The first-version materials should be reused as baselines and early abstract context, not as the final paper's main contribution.
 - The first English draft is written in LaTeX under `paper/`, using IEEEtran one-column style and linking to the generated experiment figures.
+- Based on `后续任务及建议.md`, the next priority is not more prose but stronger experiments: multi-seed statistics, ablation, risk correlation, and baseline diagnostics.
+
+- After the enhanced experiments stabilized, the paper draft should use the 10-seed baseline table, refined `V` sweep, risk-correlation sweep, and ablation table as the main evidence set.
 
 ## Errors Encountered
 

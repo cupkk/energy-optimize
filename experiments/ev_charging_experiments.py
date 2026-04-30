@@ -48,6 +48,7 @@ def build_scenario(
     n_slots: int = 48,
     seed: int = 7,
     capacity_factor: float = 0.32,
+    price_load_mode: str = "aligned",
 ) -> Scenario:
     rng = np.random.default_rng(seed)
     delta_h = 24.0 / n_slots
@@ -69,20 +70,23 @@ def build_scenario(
     energy_kwh = np.minimum(requested_energy, 0.88 * max_feasible_energy)
     energy_kwh = np.maximum(energy_kwh, np.minimum(4.0, 0.5 * max_feasible_energy))
 
-    price = (
-        0.45
-        + 0.55 * np.exp(-0.5 * ((slot_hours - 18.5) / 2.8) ** 2)
-        + 0.25 * np.exp(-0.5 * ((slot_hours - 8.0) / 1.8) ** 2)
-    )
-    price += rng.normal(0.0, 0.025, size=n_slots)
-    price = np.clip(price, 0.30, None)
-
     base_forecast_kw = (
         42.0
         + 12.0 * np.sin((slot_hours - 6.0) / 24.0 * 2.0 * np.pi)
         + 28.0 * np.exp(-0.5 * ((slot_hours - 19.0) / 3.2) ** 2)
     )
     base_forecast_kw = np.clip(base_forecast_kw, 25.0, None)
+    base_shape = (base_forecast_kw - base_forecast_kw.min()) / (np.ptp(base_forecast_kw) + 1e-9)
+    if price_load_mode == "aligned":
+        price = 0.35 + 0.65 * base_shape + 0.12 * np.exp(-0.5 * ((slot_hours - 8.0) / 1.8) ** 2)
+    elif price_load_mode == "inverted":
+        price = 0.35 + 0.65 * (1.0 - base_shape) + 0.08 * np.exp(-0.5 * ((slot_hours - 13.0) / 2.5) ** 2)
+    elif price_load_mode == "flat":
+        price = np.full(n_slots, 0.65)
+    else:
+        raise ValueError(f"Unknown price_load_mode: {price_load_mode}")
+    price += rng.normal(0.0, 0.025, size=n_slots)
+    price = np.clip(price, 0.30, None)
     base_sigma_kw = 0.06 * base_forecast_kw + 1.5
     base_actual_kw = base_forecast_kw + rng.normal(0.0, base_sigma_kw)
     base_actual_kw = np.clip(base_actual_kw, 15.0, None)
@@ -263,12 +267,26 @@ def run_dual_decomposition(
         step = step0 / np.sqrt(it)
         lambda_price = np.maximum(lambda_price + step * overload, 0.0)
 
+    before_delivered = np.zeros(scenario.n_ev)
+    for i in range(scenario.n_ev):
+        before_delivered[i] = float(np.sum(schedule[i, :] * scenario.eta[i] * scenario.delta_h))
+    before_remaining = np.maximum(scenario.energy_kwh - before_delivered, 0.0)
+    before_total_load = schedule.sum(axis=0) + scenario.base_actual_kw
+    before_capacity_violation = before_total_load > scenario.transformer_capacity_kw + 1e-6
+
     schedule = repair_capacity_and_energy(schedule, scenario, cap)
     delivered = np.zeros(scenario.n_ev)
     for i in range(scenario.n_ev):
         delivered[i] = float(np.sum(schedule[i, :] * scenario.eta[i] * scenario.delta_h))
     remaining = np.maximum(scenario.energy_kwh - delivered, 0.0)
-    extra = {"dual_iterations": iterations}
+    extra = {
+        "dual_iterations": iterations,
+        "before_repair_unserved_energy_ratio": float(before_remaining.sum() / max(scenario.energy_kwh.sum(), 1e-9)),
+        "before_repair_capacity_violation_rate": float(np.mean(before_capacity_violation)),
+        "before_repair_capacity_violation_max_kw": float(
+            np.maximum(before_total_load - scenario.transformer_capacity_kw, 0.0).max()
+        ),
+    }
     return MethodResult("dual_decomposition", schedule, remaining, time.perf_counter() - start, extra)
 
 
@@ -427,6 +445,9 @@ def run_online_lyapunov_admm(
     beta: float = 0.015,
     urgency_delta: float = 1.0,
     max_iter: int = 80,
+    use_deadline_floor: bool = True,
+    use_queue_urgency: bool = True,
+    name: str = "online_lyapunov_admm",
 ) -> MethodResult:
     start = time.perf_counter()
     cap = available_capacity_kw(scenario, kappa)
@@ -444,20 +465,23 @@ def run_online_lyapunov_admm(
         slots_left = np.maximum(scenario.departures[active_idx] - t, 1)
         max_by_energy = remaining[active_idx] / (scenario.eta[active_idx] * scenario.delta_h)
         pmax = np.minimum(scenario.pmax_kw[active_idx], max_by_energy)
-        future_slots_after_now = np.maximum(slots_left - 1, 0)
-        future_max_energy = (
-            future_slots_after_now
-            * scenario.pmax_kw[active_idx]
-            * scenario.eta[active_idx]
-            * scenario.delta_h
-        )
-        lower = np.maximum(
-            (remaining[active_idx] - future_max_energy)
-            / (scenario.eta[active_idx] * scenario.delta_h),
-            0.0,
-        )
-        lower = np.minimum(lower, pmax)
-        urgency_weight = 1.0 / (slots_left + urgency_delta)
+        if use_deadline_floor:
+            future_slots_after_now = np.maximum(slots_left - 1, 0)
+            future_max_energy = (
+                future_slots_after_now
+                * scenario.pmax_kw[active_idx]
+                * scenario.eta[active_idx]
+                * scenario.delta_h
+            )
+            lower = np.maximum(
+                (remaining[active_idx] - future_max_energy)
+                / (scenario.eta[active_idx] * scenario.delta_h),
+                0.0,
+            )
+            lower = np.minimum(lower, pmax)
+        else:
+            lower = np.zeros_like(pmax)
+        urgency_weight = 1.0 / (slots_left + urgency_delta) if use_queue_urgency else np.zeros_like(slots_left, dtype=float)
 
         linear = (
             V * scenario.price[t] * scenario.delta_h
@@ -489,7 +513,7 @@ def run_online_lyapunov_admm(
         "V": V,
         "beta": beta,
     }
-    return MethodResult("online_lyapunov_admm", schedule, remaining, time.perf_counter() - start, extra)
+    return MethodResult(name, schedule, remaining, time.perf_counter() - start, extra)
 
 
 def run_offline_centralized_lp(scenario: Scenario, kappa: float = 1.0) -> MethodResult:
@@ -567,6 +591,16 @@ def evaluate_result(scenario: Scenario, result: MethodResult) -> dict:
     fairness = (float(satisfaction.sum()) ** 2) / (
         scenario.n_ev * float(np.sum(satisfaction**2)) + 1e-12
     )
+    duration_slots = np.maximum(scenario.departures - scenario.arrivals, 1)
+    feasible_energy = duration_slots * scenario.pmax_kw * scenario.eta * scenario.delta_h
+    tightness = np.divide(
+        scenario.energy_kwh,
+        feasible_energy,
+        out=np.zeros_like(scenario.energy_kwh),
+        where=feasible_energy > 0,
+    )
+    deadline_weights = tightness / max(float(tightness.sum()), 1e-12)
+    deadline_weighted_satisfaction = float(np.sum(deadline_weights * satisfaction))
 
     capacity_violation = total_load > scenario.transformer_capacity_kw + 1e-6
     strict_violation = result.remaining_kwh > 1e-3
@@ -585,6 +619,9 @@ def evaluate_result(scenario: Scenario, result: MethodResult) -> dict:
         "average_remaining_kwh": float(np.mean(result.remaining_kwh)),
         "unserved_energy_ratio": float(result.remaining_kwh.sum() / max(scenario.energy_kwh.sum(), 1e-9)),
         "fairness_jain": float(fairness),
+        "worst_user_satisfaction": float(satisfaction.min()) if satisfaction.size else 0.0,
+        "p95_remaining_kwh": float(np.quantile(result.remaining_kwh, 0.95)) if result.remaining_kwh.size else 0.0,
+        "deadline_weighted_satisfaction": deadline_weighted_satisfaction,
         "runtime_s": float(result.runtime_s),
         "capacity_violation_rate": float(np.mean(capacity_violation)),
         "capacity_violation_max_kw": float(np.maximum(total_load - scenario.transformer_capacity_kw, 0.0).max()),
@@ -721,9 +758,15 @@ def run_base_experiment(
     kappa: float,
     V: float,
     capacity_factor: float = 0.32,
+    price_load_mode: str = "aligned",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
-    scenario = build_scenario(n_ev=n_ev, seed=seed, capacity_factor=capacity_factor)
+    scenario = build_scenario(
+        n_ev=n_ev,
+        seed=seed,
+        capacity_factor=capacity_factor,
+        price_load_mode=price_load_mode,
+    )
     scenario_meta = {
         "n_ev": scenario.n_ev,
         "n_slots": scenario.n_slots,
@@ -732,6 +775,7 @@ def run_base_experiment(
         "kappa": kappa,
         "V": V,
         "capacity_factor": capacity_factor,
+        "price_load_mode": price_load_mode,
         "total_requested_energy_kwh": float(scenario.energy_kwh.sum()),
         "mean_parking_slots": float(np.mean(scenario.departures - scenario.arrivals)),
         "mean_energy_kwh": float(np.mean(scenario.energy_kwh)),
@@ -776,9 +820,25 @@ def run_online_only_metrics(
     kappa: float,
     V: float,
     capacity_factor: float,
+    price_load_mode: str = "aligned",
+    use_deadline_floor: bool = True,
+    use_queue_urgency: bool = True,
+    name: str = "online_lyapunov_admm",
 ) -> dict:
-    scenario = build_scenario(n_ev=n_ev, seed=seed, capacity_factor=capacity_factor)
-    result = run_online_lyapunov_admm(scenario, kappa=kappa, V=V)
+    scenario = build_scenario(
+        n_ev=n_ev,
+        seed=seed,
+        capacity_factor=capacity_factor,
+        price_load_mode=price_load_mode,
+    )
+    result = run_online_lyapunov_admm(
+        scenario,
+        kappa=kappa,
+        V=V,
+        use_deadline_floor=use_deadline_floor,
+        use_queue_urgency=use_queue_urgency,
+        name=name,
+    )
     return evaluate_result(scenario, result)
 
 
@@ -789,6 +849,7 @@ def run_capacity_sweep(
     kappa: float,
     V: float,
     capacity_factors: list[float],
+    price_load_mode: str = "aligned",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -801,6 +862,7 @@ def run_capacity_sweep(
             kappa=kappa,
             V=V,
             capacity_factor=factor,
+            price_load_mode=price_load_mode,
         )
         metrics["capacity_factor"] = factor
         rows.append(metrics)
@@ -817,6 +879,7 @@ def run_v_sweep(
     kappa: float,
     capacity_factor: float,
     V_values: list[float],
+    price_load_mode: str = "aligned",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -827,6 +890,7 @@ def run_v_sweep(
             kappa=kappa,
             V=value,
             capacity_factor=capacity_factor,
+            price_load_mode=price_load_mode,
         )
         row["V"] = value
         rows.append(row)
@@ -843,6 +907,7 @@ def run_risk_sweep(
     V: float,
     capacity_factor: float,
     kappa_values: list[float],
+    price_load_mode: str = "aligned",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -853,6 +918,7 @@ def run_risk_sweep(
             kappa=kappa,
             V=V,
             capacity_factor=capacity_factor,
+            price_load_mode=price_load_mode,
         )
         row["kappa"] = kappa
         rows.append(row)
@@ -869,6 +935,7 @@ def run_scalability_sweep(
     kappa: float,
     V: float,
     capacity_factor: float,
+    price_load_mode: str = "aligned",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -880,6 +947,7 @@ def run_scalability_sweep(
             kappa=kappa,
             V=V,
             capacity_factor=capacity_factor,
+            price_load_mode=price_load_mode,
         )
         metrics["n_ev"] = n_ev
         rows.append(metrics)
@@ -887,6 +955,242 @@ def run_scalability_sweep(
     summary.to_csv(out_dir / "scalability_sweep_summary.csv", index=False, encoding="utf-8-sig")
     plot_scalability_sweep(summary, out_dir)
     return summary
+
+
+def summarize_replicates(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    numeric_cols = [
+        col
+        for col in df.select_dtypes(include=[np.number]).columns
+        if col not in set(group_cols + ["seed"])
+    ]
+    summary = df.groupby(group_cols)[numeric_cols].agg(["mean", "std", "min", "max"]).reset_index()
+    summary.columns = [
+        "_".join([part for part in col if part]) if isinstance(col, tuple) else col
+        for col in summary.columns
+    ]
+    return summary
+
+
+def plot_multiseed_method_summary(summary: pd.DataFrame, out_dir: Path) -> None:
+    method_col = "method"
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8.2))
+    items = [
+        ("total_cost", "Total cost"),
+        ("peak_total_load_kw", "Peak total load (kW)"),
+        ("unserved_energy_ratio", "Unserved energy ratio"),
+        ("runtime_s", "Runtime (s)"),
+    ]
+    for ax, (metric, title) in zip(axes.ravel(), items):
+        mean_col = f"{metric}_mean"
+        std_col = f"{metric}_std"
+        ax.bar(summary[method_col], summary[mean_col], yerr=summary[std_col].fillna(0.0), color="#3b82f6")
+        ax.set_title(title)
+        ax.grid(axis="y", alpha=0.25)
+        ax.tick_params(axis="x", rotation=35)
+    fig.tight_layout()
+    fig.savefig(out_dir / "multiseed_base_summary.png", dpi=180)
+    plt.close(fig)
+
+
+def run_multiseed_base(
+    n_ev: int,
+    seeds: list[int],
+    out_dir: Path,
+    kappa: float,
+    V: float,
+    capacity_factor: float,
+    price_load_mode: str = "aligned",
+) -> pd.DataFrame:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for seed in seeds:
+        metrics = run_base_experiment(
+            n_ev=n_ev,
+            seed=seed,
+            out_dir=out_dir / f"seed_{seed}",
+            kappa=kappa,
+            V=V,
+            capacity_factor=capacity_factor,
+            price_load_mode=price_load_mode,
+        )
+        metrics["seed"] = seed
+        rows.append(metrics)
+    raw = pd.concat(rows, ignore_index=True)
+    raw.to_csv(out_dir / "multiseed_base_raw.csv", index=False, encoding="utf-8-sig")
+    summary = summarize_replicates(raw, ["method"])
+    summary.to_csv(out_dir / "multiseed_base_summary.csv", index=False, encoding="utf-8-sig")
+    plot_multiseed_method_summary(summary, out_dir)
+    return summary
+
+
+def plot_ablation_summary(summary: pd.DataFrame, out_dir: Path) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8.2))
+    items = [
+        ("total_cost", "Total cost"),
+        ("peak_total_load_kw", "Peak total load (kW)"),
+        ("unserved_energy_ratio", "Unserved energy ratio"),
+        ("capacity_violation_rate", "Capacity violation rate"),
+    ]
+    for ax, (metric, title) in zip(axes.ravel(), items):
+        mean_col = f"{metric}_mean"
+        std_col = f"{metric}_std"
+        ax.bar(summary["method"], summary[mean_col], yerr=summary[std_col].fillna(0.0), color="#6366f1")
+        ax.set_title(title)
+        ax.grid(axis="y", alpha=0.25)
+        ax.tick_params(axis="x", rotation=35)
+    fig.tight_layout()
+    fig.savefig(out_dir / "ablation_summary.png", dpi=180)
+    plt.close(fig)
+
+
+def run_ablation_sweep(
+    n_ev: int,
+    seeds: list[int],
+    out_dir: Path,
+    kappa: float,
+    V: float,
+    capacity_factor: float,
+    price_load_mode: str = "aligned",
+) -> pd.DataFrame:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for seed in seeds:
+        scenario = build_scenario(
+            n_ev=n_ev,
+            seed=seed,
+            capacity_factor=capacity_factor,
+            price_load_mode=price_load_mode,
+        )
+        variants = [
+            run_greedy_deadline_price(scenario, kappa=kappa),
+            run_online_lyapunov_admm(scenario, kappa=kappa, V=V, name="full_online_ladmm"),
+            run_online_lyapunov_admm(
+                scenario,
+                kappa=kappa,
+                V=V,
+                use_deadline_floor=False,
+                name="no_deadline_floor",
+            ),
+            run_online_lyapunov_admm(
+                scenario,
+                kappa=0.0,
+                V=V,
+                name="no_risk_buffer",
+            ),
+            run_online_lyapunov_admm(
+                scenario,
+                kappa=kappa,
+                V=V,
+                use_queue_urgency=False,
+                name="no_lyapunov_queue",
+            ),
+        ]
+        for result in variants:
+            row = evaluate_result(scenario, result)
+            row["seed"] = seed
+            rows.append(row)
+    raw = pd.DataFrame(rows)
+    raw.to_csv(out_dir / "ablation_raw.csv", index=False, encoding="utf-8-sig")
+    summary = summarize_replicates(raw, ["method"])
+    summary.to_csv(out_dir / "ablation_summary.csv", index=False, encoding="utf-8-sig")
+    plot_ablation_summary(summary, out_dir)
+    return summary
+
+
+def plot_rho_sweep(summary: pd.DataFrame, out_dir: Path) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8.0))
+    items = [
+        ("total_cost", "Total cost"),
+        ("average_remaining_kwh", "Avg remaining kWh"),
+        ("offline_admm_primal_residual", "Primal residual"),
+        ("offline_admm_dual_residual", "Dual residual"),
+    ]
+    for ax, (metric, title) in zip(axes.ravel(), items):
+        ax.plot(summary["rho"], summary[metric], marker="o", linewidth=2.0)
+        ax.set_xscale("log")
+        ax.set_title(title)
+        ax.set_xlabel("ADMM rho")
+        ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(out_dir / "offline_admm_rho_sweep.png", dpi=180)
+    plt.close(fig)
+
+
+def run_rho_sweep(
+    n_ev: int,
+    seed: int,
+    out_dir: Path,
+    kappa: float,
+    capacity_factor: float,
+    rho_values: list[float],
+    price_load_mode: str = "aligned",
+) -> pd.DataFrame:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scenario = build_scenario(
+        n_ev=n_ev,
+        seed=seed,
+        capacity_factor=capacity_factor,
+        price_load_mode=price_load_mode,
+    )
+    rows = []
+    for rho in rho_values:
+        result = run_offline_admm(scenario, kappa=kappa, rho=rho)
+        row = evaluate_result(scenario, result)
+        row["rho"] = rho
+        rows.append(row)
+    summary = pd.DataFrame(rows)
+    summary.to_csv(out_dir / "offline_admm_rho_sweep.csv", index=False, encoding="utf-8-sig")
+    plot_rho_sweep(summary, out_dir)
+    return summary
+
+
+def run_risk_correlation_sweep(
+    n_ev: int,
+    seed: int,
+    out_dir: Path,
+    V: float,
+    capacity_factor: float,
+    kappa_values: list[float],
+    price_load_modes: list[str],
+) -> pd.DataFrame:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for mode in price_load_modes:
+        summary = run_risk_sweep(
+            n_ev=n_ev,
+            seed=seed,
+            out_dir=out_dir / mode,
+            V=V,
+            capacity_factor=capacity_factor,
+            kappa_values=kappa_values,
+            price_load_mode=mode,
+        )
+        summary["price_load_mode"] = mode
+        rows.append(summary)
+    combined = pd.concat(rows, ignore_index=True)
+    combined.to_csv(out_dir / "risk_correlation_sweep.csv", index=False, encoding="utf-8-sig")
+    plot_risk_correlation_sweep(combined, out_dir)
+    return combined
+
+
+def plot_risk_correlation_sweep(summary: pd.DataFrame, out_dir: Path) -> None:
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.2))
+    metrics = [
+        ("capacity_violation_rate", "Capacity violation rate"),
+        ("total_cost", "Total cost"),
+        ("peak_total_load_kw", "Peak total load (kW)"),
+    ]
+    for ax, (col, title) in zip(axes, metrics):
+        for mode in summary["price_load_mode"].unique():
+            part = summary[summary["price_load_mode"] == mode].sort_values("kappa")
+            ax.plot(part["kappa"], part[col], marker="o", linewidth=2.0, label=mode)
+        ax.set_title(title)
+        ax.set_xlabel("Risk buffer kappa")
+        ax.grid(alpha=0.25)
+    axes[0].legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_dir / "risk_correlation_sweep.png", dpi=180)
+    plt.close(fig)
 
 
 def parse_float_list(value: str) -> list[float]:
@@ -901,7 +1205,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run EV charging scheduling experiments.")
     parser.add_argument(
         "--mode",
-        choices=["base", "capacity-sweep", "v-sweep", "risk-sweep", "scalability-sweep"],
+        choices=[
+            "base",
+            "capacity-sweep",
+            "v-sweep",
+            "risk-sweep",
+            "risk-correlation-sweep",
+            "scalability-sweep",
+            "multiseed-base",
+            "ablation",
+            "rho-sweep",
+        ],
         default="base",
     )
     parser.add_argument("--n-ev", type=int, default=50)
@@ -909,10 +1223,14 @@ def main() -> None:
     parser.add_argument("--kappa", type=float, default=1.0)
     parser.add_argument("--V", type=float, default=1.0)
     parser.add_argument("--capacity-factor", type=float, default=0.32)
-    parser.add_argument("--capacity-factors", type=str, default="0.40,0.32,0.26,0.22")
-    parser.add_argument("--V-values", type=str, default="0.05,0.1,0.2,0.5,1,2,5")
+    parser.add_argument("--capacity-factors", type=str, default="0.40,0.32,0.26,0.22,0.20")
+    parser.add_argument("--V-values", type=str, default="0.05,0.1,0.2,0.5,0.8,1,1.2,1.5,2,5")
     parser.add_argument("--kappa-values", type=str, default="0,0.5,1,1.5,2")
+    parser.add_argument("--rho-values", type=str, default="0.1,0.5,1,2,5,10")
     parser.add_argument("--n-values", type=str, default="50,100,200,500")
+    parser.add_argument("--seeds", type=str, default="7,11,13")
+    parser.add_argument("--price-load-mode", choices=["aligned", "inverted", "flat"], default="aligned")
+    parser.add_argument("--price-load-modes", type=str, default="aligned,inverted")
     parser.add_argument("--out-dir", type=Path, default=Path("outputs/base_experiment"))
     args = parser.parse_args()
 
@@ -924,6 +1242,7 @@ def main() -> None:
             kappa=args.kappa,
             V=args.V,
             capacity_factors=parse_float_list(args.capacity_factors),
+            price_load_mode=args.price_load_mode,
         )
     elif args.mode == "v-sweep":
         metrics = run_v_sweep(
@@ -933,6 +1252,7 @@ def main() -> None:
             kappa=args.kappa,
             capacity_factor=args.capacity_factor,
             V_values=parse_float_list(args.V_values),
+            price_load_mode=args.price_load_mode,
         )
     elif args.mode == "risk-sweep":
         metrics = run_risk_sweep(
@@ -942,6 +1262,17 @@ def main() -> None:
             V=args.V,
             capacity_factor=args.capacity_factor,
             kappa_values=parse_float_list(args.kappa_values),
+            price_load_mode=args.price_load_mode,
+        )
+    elif args.mode == "risk-correlation-sweep":
+        metrics = run_risk_correlation_sweep(
+            n_ev=args.n_ev,
+            seed=args.seed,
+            out_dir=args.out_dir,
+            V=args.V,
+            capacity_factor=args.capacity_factor,
+            kappa_values=parse_float_list(args.kappa_values),
+            price_load_modes=[item.strip() for item in args.price_load_modes.split(",") if item.strip()],
         )
     elif args.mode == "scalability-sweep":
         metrics = run_scalability_sweep(
@@ -951,6 +1282,37 @@ def main() -> None:
             kappa=args.kappa,
             V=args.V,
             capacity_factor=args.capacity_factor,
+            price_load_mode=args.price_load_mode,
+        )
+    elif args.mode == "multiseed-base":
+        metrics = run_multiseed_base(
+            n_ev=args.n_ev,
+            seeds=parse_int_list(args.seeds),
+            out_dir=args.out_dir,
+            kappa=args.kappa,
+            V=args.V,
+            capacity_factor=args.capacity_factor,
+            price_load_mode=args.price_load_mode,
+        )
+    elif args.mode == "ablation":
+        metrics = run_ablation_sweep(
+            n_ev=args.n_ev,
+            seeds=parse_int_list(args.seeds),
+            out_dir=args.out_dir,
+            kappa=args.kappa,
+            V=args.V,
+            capacity_factor=args.capacity_factor,
+            price_load_mode=args.price_load_mode,
+        )
+    elif args.mode == "rho-sweep":
+        metrics = run_rho_sweep(
+            n_ev=args.n_ev,
+            seed=args.seed,
+            out_dir=args.out_dir,
+            kappa=args.kappa,
+            capacity_factor=args.capacity_factor,
+            rho_values=parse_float_list(args.rho_values),
+            price_load_mode=args.price_load_mode,
         )
     else:
         metrics = run_base_experiment(
@@ -960,6 +1322,7 @@ def main() -> None:
             kappa=args.kappa,
             V=args.V,
             capacity_factor=args.capacity_factor,
+            price_load_mode=args.price_load_mode,
         )
 
     display_cols = [
@@ -972,7 +1335,11 @@ def main() -> None:
         "runtime_s",
         "capacity_violation_rate",
     ]
-    print(metrics[display_cols].to_string(index=False))
+    available_display_cols = [col for col in display_cols if col in metrics.columns]
+    if available_display_cols:
+        print(metrics[available_display_cols].to_string(index=False))
+    else:
+        print(metrics.head(20).to_string(index=False))
 
 
 if __name__ == "__main__":

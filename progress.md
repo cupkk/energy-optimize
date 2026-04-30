@@ -22,3 +22,14 @@
 - Added `实验结论与汇报提纲.md` for presentation-friendly experiment interpretation.
 - Created the first English LaTeX paper draft in `paper/main.tex` and bibliography in `paper/references.bib`.
 - Added `论文写作计划.md` and recorded that the current environment does not provide `pdflatex`/`bibtex` for PDF compilation.
+- Read `后续任务及建议.md` and created `后续任务执行计划.md` to prioritize the next work.
+- Added stronger metrics: worst-user satisfaction, 95th percentile remaining demand, and deadline-weighted satisfaction.
+- Added price-load correlation scenarios, multi-seed baseline mode, ablation mode, risk-correlation sweep, and offline ADMM rho sweep.
+- Ran enhanced experiments: `outputs/multiseed_base_10/`, `outputs/ablation_3_v08/`, `outputs/risk_correlation/`, `outputs/offline_admm_rho_sweep/`, `outputs/tight_v_sweep_refined/`, and `outputs/capacity_sweep_v08/`.
+- Added `.gitignore`, pinned dependency minimum versions in `requirements.txt`, and created `README.md` with reproducibility commands.
+- Attempted to remove generated `experiments/__pycache__/ev_charging_experiments.cpython-312.pyc`, but deletion approval timed out; leave it for explicit cleanup before commit.
+- Expanded `paper/main.tex` with paper-ready result tables for setup, 10-seed baseline statistics, and ablation results.
+- Expanded `paper/main.tex` related work and added a short convexity/ADMM properties subsection so the method section has clearer theoretical support.
+- Added `论文可用图表与结论索引.md` to explain each final figure/table in plain language for paper writing and presentation preparation.
+- Re-ran `python -m py_compile experiments\ev_charging_experiments.py`; the experiment script passed syntax checking.
+- Ran a small CLI smoke test with 12 EVs under `outputs/smoke_check/`; all six methods completed and produced baseline metrics.

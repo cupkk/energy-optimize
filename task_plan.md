@@ -15,6 +15,9 @@ Analyze the project materials and plan the remaining work for an SCI-style paper
 | 6. Strengthen experiment credibility | complete | Multi-seed statistics, stronger metrics, ablation, risk correlation, ADMM tuning |
 | 7. Improve reproducibility packaging | complete | README, .gitignore, pinned requirements, final commands |
 | 8. Convert stable results into paper-ready evidence | complete | LaTeX result tables, stronger related work, basic method properties, Chinese figure/table interpretation index |
+| 9. Reconcile remaining recommendations | complete | 30-seed baseline, workplace profile, method-characteristics table, remaining-task matrix |
+| 10. Close feasible experiment gaps | complete | Large-scale fast scalability and centralized per-slot ablation |
+| 11. Close external validation and submission gaps | complete | 4TU/ElaadNL public-data check, 45 references, 8-page PDF, tracked pyc cleanup |
 
 ## Experiment-First Execution Plan
 
@@ -68,6 +71,10 @@ Analyze the project materials and plan the remaining work for an SCI-style paper
 
 - After the enhanced experiments stabilized, the paper draft should use the 10-seed baseline table, refined `V` sweep, risk-correlation sweep, and ablation table as the main evidence set.
 
+- The baseline evidence has been upgraded again from 10 seeds to 30 seeds. Workplace-profile results are used only as sensitivity evidence, not as a claim of real-data validation.
+- Public-data validation uses the 4TU/ElaadNL office parking dataset as an external-validity check. It uses real session timing and energy, but simulated price and base-load uncertainty, so it should not be described as a full field deployment.
+- To satisfy the 8-page single-column constraint with 45 references, the final course-report draft keeps core tables in the paper and leaves detailed figures in `outputs/` for presentation and extended versions.
+
 ## Errors Encountered
 
 | Error | Attempt | Resolution |
@@ -75,3 +82,4 @@ Analyze the project materials and plan the remaining work for an SCI-style paper
 | `python-docx` failed on literal Chinese path rendered as `?????.docx` | Directly opened `第一版摘要.docx` in Python source | Re-ran extraction by globbing `*.docx`; content extracted successfully |
 | PowerShell profile warning appears before commands | Running PowerShell commands in this environment | Commands still completed when exit code was 0; warning is unrelated to experiment code |
 | `pdflatex`/`bibtex` not found | Checked LaTeX compiler availability | Generated LaTeX source only; PDF compilation must be done in a LaTeX-enabled environment |
+| Tectonic compile timed out | First run with a new local TeX engine | Re-ran with `--print` after cache warm-up; PDF compiled successfully |

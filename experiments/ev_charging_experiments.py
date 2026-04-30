@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy.optimize import linprog
+from scipy.optimize import linprog, minimize
 from scipy.sparse import lil_matrix
 
 
@@ -22,6 +22,7 @@ class Scenario:
     n_ev: int
     n_slots: int
     delta_h: float
+    scenario_profile: str
     arrivals: np.ndarray
     departures: np.ndarray
     energy_kwh: np.ndarray
@@ -32,6 +33,7 @@ class Scenario:
     base_actual_kw: np.ndarray
     base_sigma_kw: np.ndarray
     transformer_capacity_kw: np.ndarray
+    metadata: dict | None = None
 
 
 @dataclass
@@ -49,32 +51,52 @@ def build_scenario(
     seed: int = 7,
     capacity_factor: float = 0.32,
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> Scenario:
     rng = np.random.default_rng(seed)
     delta_h = 24.0 / n_slots
     slot_hours = np.arange(n_slots) * delta_h
 
-    morning_peak = np.exp(-0.5 * ((slot_hours - 9.0) / 2.0) ** 2)
-    evening_peak = 1.8 * np.exp(-0.5 * ((slot_hours - 18.0) / 3.0) ** 2)
-    arrival_prob = 0.15 + morning_peak + evening_peak
-    arrival_prob = arrival_prob / arrival_prob.sum()
+    if scenario_profile == "synthetic":
+        morning_peak = np.exp(-0.5 * ((slot_hours - 9.0) / 2.0) ** 2)
+        evening_peak = 1.8 * np.exp(-0.5 * ((slot_hours - 18.0) / 3.0) ** 2)
+        arrival_prob = 0.15 + morning_peak + evening_peak
+        arrivals = rng.choice(np.arange(n_slots - 3), size=n_ev, p=arrival_prob[:-3] / arrival_prob[:-3].sum())
+        parking_slots = rng.integers(5, 19, size=n_ev)
+        pmax_kw = rng.choice(np.array([6.6, 7.2, 11.0]), size=n_ev, p=np.array([0.35, 0.45, 0.20]))
+        requested_energy = rng.uniform(8.0, 32.0, size=n_ev)
+    elif scenario_profile == "workplace":
+        # A workplace-style profile: most arrivals occur in the morning and vehicles stay for a workday.
+        arrival_prob = (
+            0.03
+            + 2.8 * np.exp(-0.5 * ((slot_hours - 8.5) / 1.4) ** 2)
+            + 0.4 * np.exp(-0.5 * ((slot_hours - 12.5) / 1.8) ** 2)
+        )
+        arrivals = rng.choice(np.arange(n_slots - 6), size=n_ev, p=arrival_prob[:-6] / arrival_prob[:-6].sum())
+        parking_slots = rng.integers(12, 22, size=n_ev)
+        pmax_kw = rng.choice(np.array([6.6, 7.2, 11.0]), size=n_ev, p=np.array([0.45, 0.45, 0.10]))
+        requested_energy = np.clip(rng.lognormal(mean=2.65, sigma=0.45, size=n_ev), 6.0, 35.0)
+    else:
+        raise ValueError(f"Unknown scenario_profile: {scenario_profile}")
 
-    arrivals = rng.choice(np.arange(n_slots - 3), size=n_ev, p=arrival_prob[:-3] / arrival_prob[:-3].sum())
-    parking_slots = rng.integers(5, 19, size=n_ev)
     departures = np.minimum(arrivals + parking_slots, n_slots)
-    pmax_kw = rng.choice(np.array([6.6, 7.2, 11.0]), size=n_ev, p=np.array([0.35, 0.45, 0.20]))
     eta = rng.uniform(0.90, 0.96, size=n_ev)
-
     max_feasible_energy = (departures - arrivals) * delta_h * pmax_kw * eta
-    requested_energy = rng.uniform(8.0, 32.0, size=n_ev)
     energy_kwh = np.minimum(requested_energy, 0.88 * max_feasible_energy)
     energy_kwh = np.maximum(energy_kwh, np.minimum(4.0, 0.5 * max_feasible_energy))
 
-    base_forecast_kw = (
-        42.0
-        + 12.0 * np.sin((slot_hours - 6.0) / 24.0 * 2.0 * np.pi)
-        + 28.0 * np.exp(-0.5 * ((slot_hours - 19.0) / 3.2) ** 2)
-    )
+    if scenario_profile == "workplace":
+        base_forecast_kw = (
+            46.0
+            + 18.0 * np.exp(-0.5 * ((slot_hours - 10.5) / 3.5) ** 2)
+            + 14.0 * np.exp(-0.5 * ((slot_hours - 15.0) / 3.8) ** 2)
+        )
+    else:
+        base_forecast_kw = (
+            42.0
+            + 12.0 * np.sin((slot_hours - 6.0) / 24.0 * 2.0 * np.pi)
+            + 28.0 * np.exp(-0.5 * ((slot_hours - 19.0) / 3.2) ** 2)
+        )
     base_forecast_kw = np.clip(base_forecast_kw, 25.0, None)
     base_shape = (base_forecast_kw - base_forecast_kw.min()) / (np.ptp(base_forecast_kw) + 1e-9)
     if price_load_mode == "aligned":
@@ -98,6 +120,7 @@ def build_scenario(
         n_ev=n_ev,
         n_slots=n_slots,
         delta_h=delta_h,
+        scenario_profile=scenario_profile,
         arrivals=arrivals,
         departures=departures,
         energy_kwh=energy_kwh,
@@ -108,6 +131,151 @@ def build_scenario(
         base_actual_kw=base_actual_kw,
         base_sigma_kw=base_sigma_kw,
         transformer_capacity_kw=transformer_capacity_kw,
+        metadata={"source": "synthetic_generator"},
+    )
+
+
+def _find_required_column(columns: list[str], candidates: list[str], label: str) -> str:
+    normalized = {col.strip().lower(): col for col in columns}
+    for candidate in candidates:
+        if candidate.lower() in normalized:
+            return normalized[candidate.lower()]
+    raise ValueError(f"Could not find {label} column. Tried: {', '.join(candidates)}")
+
+
+def load_real_session_table(csv_path: Path) -> pd.DataFrame:
+    raw = pd.read_csv(csv_path, sep=None, engine="python")
+    start_col = _find_required_column(raw.columns.tolist(), ["start_datetime", "connectionTime", "connectTime"], "start time")
+    end_col = _find_required_column(raw.columns.tolist(), ["end_datetime", "disconnectTime", "doneChargingTime"], "end time")
+    energy_col = _find_required_column(raw.columns.tolist(), ["total_energy", "kWhDelivered", "energy_kwh"], "energy")
+
+    sessions = raw[[start_col, end_col, energy_col]].copy()
+    sessions["start"] = pd.to_datetime(sessions[start_col], errors="coerce")
+    sessions["end"] = pd.to_datetime(sessions[end_col], errors="coerce")
+    sessions["energy_kwh"] = pd.to_numeric(sessions[energy_col], errors="coerce")
+    sessions["duration_h"] = (sessions["end"] - sessions["start"]).dt.total_seconds() / 3600.0
+    sessions = sessions.dropna(subset=["start", "end", "energy_kwh", "duration_h"])
+    sessions = sessions[
+        (sessions["energy_kwh"] > 1.0)
+        & (sessions["duration_h"] >= 10.0 / 60.0)
+        & (sessions["duration_h"] <= 24.0)
+    ].copy()
+    if sessions.empty:
+        raise ValueError(f"No usable charging sessions found in {csv_path}")
+    sessions["date"] = sessions["start"].dt.date.astype(str)
+    return sessions
+
+
+def top_real_data_dates(csv_path: Path, real_data_days: int) -> list[str]:
+    sessions = load_real_session_table(csv_path)
+    counts = sessions.groupby("date").size().sort_values(ascending=False)
+    return [str(item) for item in counts.head(real_data_days).index]
+
+
+def build_real_csv_scenario(
+    csv_path: Path,
+    n_ev: int = 50,
+    n_slots: int = 48,
+    seed: int = 7,
+    capacity_factor: float = 0.32,
+    price_load_mode: str = "aligned",
+    real_data_date: str | None = None,
+) -> Scenario:
+    rng = np.random.default_rng(seed)
+    delta_h = 24.0 / n_slots
+    slot_hours = np.arange(n_slots) * delta_h
+
+    sessions = load_real_session_table(csv_path)
+    if real_data_date:
+        selected_date = real_data_date
+        day_sessions = sessions[sessions["date"] == selected_date].copy()
+        if day_sessions.empty:
+            raise ValueError(f"No usable charging sessions found for date {selected_date}")
+    else:
+        counts = sessions.groupby("date").size().sort_values(ascending=False)
+        selected_date = str(counts.index[0])
+        day_sessions = sessions[sessions["date"] == selected_date].copy()
+
+    if len(day_sessions) > n_ev:
+        day_sessions = day_sessions.sample(n=n_ev, random_state=seed).sort_values("start")
+    else:
+        day_sessions = day_sessions.sort_values("start")
+
+    n_actual = len(day_sessions)
+    day_start = pd.Timestamp(selected_date)
+    arrival_hours = (day_sessions["start"] - day_start).dt.total_seconds().to_numpy() / 3600.0
+    departure_hours = (day_sessions["end"] - day_start).dt.total_seconds().to_numpy() / 3600.0
+    arrival_hours = np.clip(arrival_hours, 0.0, 24.0 - delta_h)
+    departure_hours = np.clip(departure_hours, arrival_hours + delta_h, 24.0)
+    arrivals = np.floor(arrival_hours / delta_h).astype(int)
+    departures = np.ceil(departure_hours / delta_h).astype(int)
+    departures = np.clip(np.maximum(departures, arrivals + 1), 1, n_slots)
+
+    energy_observed = day_sessions["energy_kwh"].to_numpy(dtype=float)
+    duration_h = np.maximum(day_sessions["duration_h"].to_numpy(dtype=float), delta_h)
+    observed_avg_kw = energy_observed / duration_h
+    pmax_kw = np.select(
+        [observed_avg_kw <= 6.0, observed_avg_kw <= 10.5, observed_avg_kw <= 16.0],
+        [7.2, 11.0, 16.5],
+        default=22.0,
+    ).astype(float)
+    pmax_kw = np.maximum(pmax_kw, np.minimum(22.0, observed_avg_kw * 1.20))
+    eta = rng.uniform(0.90, 0.96, size=n_actual)
+    max_feasible_energy = (departures - arrivals) * delta_h * pmax_kw * eta
+    energy_kwh = np.minimum(energy_observed, 0.98 * max_feasible_energy)
+    energy_clipped_count = int(np.sum(energy_kwh + 1e-9 < energy_observed))
+
+    base_forecast_kw = (
+        48.0
+        + 18.0 * np.exp(-0.5 * ((slot_hours - 10.5) / 3.2) ** 2)
+        + 12.0 * np.exp(-0.5 * ((slot_hours - 15.5) / 4.0) ** 2)
+    )
+    base_forecast_kw = np.clip(base_forecast_kw, 25.0, None)
+    base_shape = (base_forecast_kw - base_forecast_kw.min()) / (np.ptp(base_forecast_kw) + 1e-9)
+    if price_load_mode == "aligned":
+        price = 0.35 + 0.65 * base_shape + 0.10 * np.exp(-0.5 * ((slot_hours - 8.0) / 1.8) ** 2)
+    elif price_load_mode == "inverted":
+        price = 0.35 + 0.65 * (1.0 - base_shape) + 0.08 * np.exp(-0.5 * ((slot_hours - 13.0) / 2.5) ** 2)
+    elif price_load_mode == "flat":
+        price = np.full(n_slots, 0.65)
+    else:
+        raise ValueError(f"Unknown price_load_mode: {price_load_mode}")
+    price += rng.normal(0.0, 0.02, size=n_slots)
+    price = np.clip(price, 0.30, None)
+    base_sigma_kw = 0.06 * base_forecast_kw + 1.5
+    base_actual_kw = np.clip(base_forecast_kw + rng.normal(0.0, base_sigma_kw), 15.0, None)
+
+    ev_capacity_nominal = max(35.0, capacity_factor * n_actual * float(np.mean(pmax_kw)))
+    transformer_capacity_kw = np.full(n_slots, float(base_forecast_kw.max() + ev_capacity_nominal))
+
+    return Scenario(
+        n_ev=n_actual,
+        n_slots=n_slots,
+        delta_h=delta_h,
+        scenario_profile="real_csv",
+        arrivals=arrivals,
+        departures=departures,
+        energy_kwh=energy_kwh,
+        pmax_kw=pmax_kw,
+        eta=eta,
+        price=price,
+        base_forecast_kw=base_forecast_kw,
+        base_actual_kw=base_actual_kw,
+        base_sigma_kw=base_sigma_kw,
+        transformer_capacity_kw=transformer_capacity_kw,
+        metadata={
+            "source": "real_csv_sessions",
+            "csv_path": str(csv_path),
+            "dataset_name": "Electric Vehicle Charging Session Data of Large Office Parking Lot",
+            "dataset_doi": "10.4121/80ef3824-3f5d-4e45-8794-3b8791efbd13.v2",
+            "selected_date": selected_date,
+            "usable_sessions_total": int(len(sessions)),
+            "selected_day_sessions": int(len(day_sessions)),
+            "requested_n_ev": int(n_ev),
+            "energy_clipped_count": energy_clipped_count,
+            "mean_observed_energy_kwh": float(np.mean(energy_observed)),
+            "mean_duration_h": float(np.mean(duration_h)),
+        },
     )
 
 
@@ -516,6 +684,80 @@ def run_online_lyapunov_admm(
     return MethodResult(name, schedule, remaining, time.perf_counter() - start, extra)
 
 
+def run_online_centralized_slot(
+    scenario: Scenario,
+    kappa: float = 1.0,
+    V: float = 1.0,
+    beta: float = 0.015,
+    urgency_delta: float = 1.0,
+    use_deadline_floor: bool = True,
+    use_queue_urgency: bool = True,
+) -> MethodResult:
+    start = time.perf_counter()
+    cap = available_capacity_kw(scenario, kappa)
+    schedule = np.zeros((scenario.n_ev, scenario.n_slots))
+    remaining = scenario.energy_kwh.copy()
+    solver_failures = 0
+
+    for t in range(scenario.n_slots):
+        active_idx = np.flatnonzero(active_mask(scenario, t) & (remaining > 1e-6))
+        if active_idx.size == 0:
+            continue
+
+        slots_left = np.maximum(scenario.departures[active_idx] - t, 1)
+        max_by_energy = remaining[active_idx] / (scenario.eta[active_idx] * scenario.delta_h)
+        pmax = np.minimum(scenario.pmax_kw[active_idx], max_by_energy)
+        if use_deadline_floor:
+            future_slots_after_now = np.maximum(slots_left - 1, 0)
+            future_max_energy = (
+                future_slots_after_now
+                * scenario.pmax_kw[active_idx]
+                * scenario.eta[active_idx]
+                * scenario.delta_h
+            )
+            lower = np.maximum(
+                (remaining[active_idx] - future_max_energy)
+                / (scenario.eta[active_idx] * scenario.delta_h),
+                0.0,
+            )
+            lower = np.minimum(lower, pmax)
+        else:
+            lower = np.zeros_like(pmax)
+        if lower.sum() > cap[t] and lower.sum() > 0:
+            lower = lower * (float(cap[t]) / float(lower.sum()))
+
+        urgency_weight = 1.0 / (slots_left + urgency_delta) if use_queue_urgency else np.zeros_like(slots_left, dtype=float)
+        linear = (
+            V * scenario.price[t] * scenario.delta_h
+            - urgency_weight * remaining[active_idx] * scenario.eta[active_idx] * scenario.delta_h
+        )
+        p_ref = 0.82 * float(cap[t])
+        smooth_weight = V * beta
+
+        def objective(x: np.ndarray) -> float:
+            return float(linear @ x + smooth_weight * (float(x.sum()) - p_ref) ** 2)
+
+        x0 = project_box_capped_sum(np.maximum(lower, 0.0), lower, pmax, float(cap[t]))
+        constraints = [{"type": "ineq", "fun": lambda x, c=float(cap[t]): c - float(np.sum(x))}]
+        bounds = list(zip(lower, pmax))
+        result = minimize(objective, x0=x0, method="SLSQP", bounds=bounds, constraints=constraints, options={"maxiter": 100, "ftol": 1e-8})
+        if result.success:
+            p = np.asarray(result.x)
+        else:
+            solver_failures += 1
+            p = x0
+        p = project_box_capped_sum(p, lower, pmax, float(cap[t]))
+        schedule[active_idx, t] = p
+        update_remaining(remaining, scenario, schedule, t)
+
+    extra = {
+        "V": V,
+        "beta": beta,
+        "centralized_slot_solver_failures": solver_failures,
+    }
+    return MethodResult("online_centralized_slot", schedule, remaining, time.perf_counter() - start, extra)
+
+
 def run_offline_centralized_lp(scenario: Scenario, kappa: float = 1.0) -> MethodResult:
     start = time.perf_counter()
     n, T = scenario.n_ev, scenario.n_slots
@@ -670,6 +912,46 @@ def plot_method_comparison(metrics: pd.DataFrame, out_dir: Path) -> None:
     plt.close(fig)
 
 
+def run_all_core_methods(scenario: Scenario, kappa: float, V: float) -> list[MethodResult]:
+    return [
+        run_uncontrolled(scenario, kappa=kappa),
+        run_greedy_deadline_price(scenario, kappa=kappa),
+        run_offline_centralized_lp(scenario, kappa=kappa),
+        run_dual_decomposition(scenario, kappa=kappa),
+        run_offline_admm(scenario, kappa=kappa),
+        run_online_lyapunov_admm(scenario, kappa=kappa, V=V),
+    ]
+
+
+def write_base_outputs(
+    scenario: Scenario,
+    results: list[MethodResult],
+    out_dir: Path,
+    kappa: float,
+) -> pd.DataFrame:
+    metrics = pd.DataFrame([evaluate_result(scenario, r) for r in results])
+    metrics.to_csv(out_dir / "metrics_summary.csv", index=False, encoding="utf-8-sig")
+
+    slot_df = pd.DataFrame(
+        {
+            "slot": np.arange(scenario.n_slots),
+            "hour": np.arange(scenario.n_slots) * scenario.delta_h,
+            "price": scenario.price,
+            "base_forecast_kw": scenario.base_forecast_kw,
+            "base_actual_kw": scenario.base_actual_kw,
+            "transformer_capacity_kw": scenario.transformer_capacity_kw,
+            "available_ev_capacity_kw": available_capacity_kw(scenario, kappa),
+        }
+    )
+    for result in results:
+        slot_df[f"{result.name}_ev_load_kw"] = result.schedule_kw.sum(axis=0)
+    slot_df.to_csv(out_dir / "slot_timeseries.csv", index=False, encoding="utf-8-sig")
+
+    plot_load_profiles(scenario, results, out_dir)
+    plot_method_comparison(metrics, out_dir)
+    return metrics
+
+
 def plot_capacity_sweep(summary: pd.DataFrame, out_dir: Path) -> None:
     methods = list(summary["method"].unique())
     fig, axes = plt.subplots(2, 2, figsize=(12, 8.2))
@@ -759,6 +1041,7 @@ def run_base_experiment(
     V: float,
     capacity_factor: float = 0.32,
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     scenario = build_scenario(
@@ -766,6 +1049,7 @@ def run_base_experiment(
         seed=seed,
         capacity_factor=capacity_factor,
         price_load_mode=price_load_mode,
+        scenario_profile=scenario_profile,
     )
     scenario_meta = {
         "n_ev": scenario.n_ev,
@@ -776,42 +1060,121 @@ def run_base_experiment(
         "V": V,
         "capacity_factor": capacity_factor,
         "price_load_mode": price_load_mode,
+        "scenario_profile": scenario_profile,
         "total_requested_energy_kwh": float(scenario.energy_kwh.sum()),
         "mean_parking_slots": float(np.mean(scenario.departures - scenario.arrivals)),
         "mean_energy_kwh": float(np.mean(scenario.energy_kwh)),
         "mean_pmax_kw": float(np.mean(scenario.pmax_kw)),
     }
+    if scenario.metadata:
+        scenario_meta.update(scenario.metadata)
     (out_dir / "scenario_meta.json").write_text(json.dumps(scenario_meta, indent=2), encoding="utf-8")
 
-    results = [
-        run_uncontrolled(scenario, kappa=kappa),
-        run_greedy_deadline_price(scenario, kappa=kappa),
-        run_offline_centralized_lp(scenario, kappa=kappa),
-        run_dual_decomposition(scenario, kappa=kappa),
-        run_offline_admm(scenario, kappa=kappa),
-        run_online_lyapunov_admm(scenario, kappa=kappa, V=V),
-    ]
-    metrics = pd.DataFrame([evaluate_result(scenario, r) for r in results])
-    metrics.to_csv(out_dir / "metrics_summary.csv", index=False, encoding="utf-8-sig")
+    results = run_all_core_methods(scenario, kappa=kappa, V=V)
+    return write_base_outputs(scenario, results, out_dir, kappa)
 
-    slot_df = pd.DataFrame(
+def run_real_data_base_experiment(
+    csv_path: Path,
+    n_ev: int,
+    seed: int,
+    out_dir: Path,
+    kappa: float,
+    V: float,
+    capacity_factor: float = 0.32,
+    price_load_mode: str = "aligned",
+    real_data_date: str | None = None,
+) -> pd.DataFrame:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scenario = build_real_csv_scenario(
+        csv_path=csv_path,
+        n_ev=n_ev,
+        seed=seed,
+        capacity_factor=capacity_factor,
+        price_load_mode=price_load_mode,
+        real_data_date=real_data_date,
+    )
+    scenario_meta = {
+        "n_ev": scenario.n_ev,
+        "n_slots": scenario.n_slots,
+        "delta_h": scenario.delta_h,
+        "seed": seed,
+        "kappa": kappa,
+        "V": V,
+        "capacity_factor": capacity_factor,
+        "price_load_mode": price_load_mode,
+        "scenario_profile": scenario.scenario_profile,
+        "total_requested_energy_kwh": float(scenario.energy_kwh.sum()),
+        "mean_parking_slots": float(np.mean(scenario.departures - scenario.arrivals)),
+        "mean_energy_kwh": float(np.mean(scenario.energy_kwh)),
+        "mean_pmax_kw": float(np.mean(scenario.pmax_kw)),
+    }
+    if scenario.metadata:
+        scenario_meta.update(scenario.metadata)
+    (out_dir / "scenario_meta.json").write_text(json.dumps(scenario_meta, indent=2), encoding="utf-8")
+    session_df = pd.DataFrame(
         {
-            "slot": np.arange(scenario.n_slots),
-            "hour": np.arange(scenario.n_slots) * scenario.delta_h,
-            "price": scenario.price,
-            "base_forecast_kw": scenario.base_forecast_kw,
-            "base_actual_kw": scenario.base_actual_kw,
-            "transformer_capacity_kw": scenario.transformer_capacity_kw,
-            "available_ev_capacity_kw": available_capacity_kw(scenario, kappa),
+            "arrival_slot": scenario.arrivals,
+            "departure_slot": scenario.departures,
+            "energy_kwh": scenario.energy_kwh,
+            "pmax_kw": scenario.pmax_kw,
+            "eta": scenario.eta,
         }
     )
-    for result in results:
-        slot_df[f"{result.name}_ev_load_kw"] = result.schedule_kw.sum(axis=0)
-    slot_df.to_csv(out_dir / "slot_timeseries.csv", index=False, encoding="utf-8-sig")
+    session_df.to_csv(out_dir / "real_sessions_used.csv", index=False, encoding="utf-8-sig")
 
-    plot_load_profiles(scenario, results, out_dir)
-    plot_method_comparison(metrics, out_dir)
-    return metrics
+    results = run_all_core_methods(scenario, kappa=kappa, V=V)
+    return write_base_outputs(scenario, results, out_dir, kappa)
+
+
+def run_real_data_multiday_experiment(
+    csv_path: Path,
+    n_ev: int,
+    seed: int,
+    out_dir: Path,
+    kappa: float,
+    V: float,
+    capacity_factor: float = 0.32,
+    price_load_mode: str = "aligned",
+    real_data_days: int = 5,
+) -> pd.DataFrame:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dates = top_real_data_dates(csv_path, real_data_days)
+    rows = []
+    for idx, selected_date in enumerate(dates):
+        day_dir = out_dir / selected_date
+        metrics = run_real_data_base_experiment(
+            csv_path=csv_path,
+            n_ev=n_ev,
+            seed=seed + idx,
+            out_dir=day_dir,
+            kappa=kappa,
+            V=V,
+            capacity_factor=capacity_factor,
+            price_load_mode=price_load_mode,
+            real_data_date=selected_date,
+        )
+        metrics["real_data_date"] = selected_date
+        metrics["day_rank"] = idx + 1
+        rows.append(metrics)
+
+    raw = pd.concat(rows, ignore_index=True)
+    raw.to_csv(out_dir / "real_data_multiday_raw.csv", index=False, encoding="utf-8-sig")
+    metric_cols = [
+        "total_cost",
+        "peak_total_load_kw",
+        "deadline_violation_rate",
+        "average_remaining_kwh",
+        "unserved_energy_ratio",
+        "capacity_violation_rate",
+        "runtime_s",
+    ]
+    summary = raw.groupby("method")[metric_cols].agg(["mean", "std"]).reset_index()
+    summary.columns = [
+        "_".join([part for part in col if part]).rstrip("_") if isinstance(col, tuple) else col
+        for col in summary.columns
+    ]
+    summary.to_csv(out_dir / "real_data_multiday_summary.csv", index=False, encoding="utf-8-sig")
+    return summary
 
 
 def run_online_only_metrics(
@@ -821,6 +1184,7 @@ def run_online_only_metrics(
     V: float,
     capacity_factor: float,
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
     use_deadline_floor: bool = True,
     use_queue_urgency: bool = True,
     name: str = "online_lyapunov_admm",
@@ -830,6 +1194,7 @@ def run_online_only_metrics(
         seed=seed,
         capacity_factor=capacity_factor,
         price_load_mode=price_load_mode,
+        scenario_profile=scenario_profile,
     )
     result = run_online_lyapunov_admm(
         scenario,
@@ -850,6 +1215,7 @@ def run_capacity_sweep(
     V: float,
     capacity_factors: list[float],
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -863,6 +1229,7 @@ def run_capacity_sweep(
             V=V,
             capacity_factor=factor,
             price_load_mode=price_load_mode,
+            scenario_profile=scenario_profile,
         )
         metrics["capacity_factor"] = factor
         rows.append(metrics)
@@ -880,6 +1247,7 @@ def run_v_sweep(
     capacity_factor: float,
     V_values: list[float],
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -891,6 +1259,7 @@ def run_v_sweep(
             V=value,
             capacity_factor=capacity_factor,
             price_load_mode=price_load_mode,
+            scenario_profile=scenario_profile,
         )
         row["V"] = value
         rows.append(row)
@@ -908,6 +1277,7 @@ def run_risk_sweep(
     capacity_factor: float,
     kappa_values: list[float],
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -919,6 +1289,7 @@ def run_risk_sweep(
             V=V,
             capacity_factor=capacity_factor,
             price_load_mode=price_load_mode,
+            scenario_profile=scenario_profile,
         )
         row["kappa"] = kappa
         rows.append(row)
@@ -936,6 +1307,7 @@ def run_scalability_sweep(
     V: float,
     capacity_factor: float,
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -948,11 +1320,66 @@ def run_scalability_sweep(
             V=V,
             capacity_factor=capacity_factor,
             price_load_mode=price_load_mode,
+            scenario_profile=scenario_profile,
         )
         metrics["n_ev"] = n_ev
         rows.append(metrics)
     summary = pd.concat(rows, ignore_index=True)
     summary.to_csv(out_dir / "scalability_sweep_summary.csv", index=False, encoding="utf-8-sig")
+    plot_scalability_sweep(summary, out_dir)
+    return summary
+
+
+def run_selected_methods(
+    scenario: Scenario,
+    kappa: float,
+    V: float,
+    method_set: str,
+) -> list[MethodResult]:
+    if method_set == "fast":
+        return [
+            run_uncontrolled(scenario, kappa=kappa),
+            run_greedy_deadline_price(scenario, kappa=kappa),
+            run_offline_centralized_lp(scenario, kappa=kappa),
+            run_online_lyapunov_admm(scenario, kappa=kappa, V=V),
+        ]
+    if method_set == "online":
+        return [
+            run_uncontrolled(scenario, kappa=kappa),
+            run_greedy_deadline_price(scenario, kappa=kappa),
+            run_online_lyapunov_admm(scenario, kappa=kappa, V=V),
+        ]
+    raise ValueError(f"Unknown method_set: {method_set}")
+
+
+def run_scalability_fast_sweep(
+    n_values: list[int],
+    seed: int,
+    out_dir: Path,
+    kappa: float,
+    V: float,
+    capacity_factor: float,
+    price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
+    method_set: str = "fast",
+) -> pd.DataFrame:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for n_ev in n_values:
+        scenario = build_scenario(
+            n_ev=n_ev,
+            seed=seed,
+            capacity_factor=capacity_factor,
+            price_load_mode=price_load_mode,
+            scenario_profile=scenario_profile,
+        )
+        results = run_selected_methods(scenario, kappa=kappa, V=V, method_set=method_set)
+        metrics = pd.DataFrame([evaluate_result(scenario, result) for result in results])
+        metrics["n_ev"] = n_ev
+        metrics["method_set"] = method_set
+        rows.append(metrics)
+    summary = pd.concat(rows, ignore_index=True)
+    summary.to_csv(out_dir / "scalability_fast_summary.csv", index=False, encoding="utf-8-sig")
     plot_scalability_sweep(summary, out_dir)
     return summary
 
@@ -1000,6 +1427,7 @@ def run_multiseed_base(
     V: float,
     capacity_factor: float,
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -1012,6 +1440,7 @@ def run_multiseed_base(
             V=V,
             capacity_factor=capacity_factor,
             price_load_mode=price_load_mode,
+            scenario_profile=scenario_profile,
         )
         metrics["seed"] = seed
         rows.append(metrics)
@@ -1051,6 +1480,7 @@ def run_ablation_sweep(
     V: float,
     capacity_factor: float,
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -1060,10 +1490,12 @@ def run_ablation_sweep(
             seed=seed,
             capacity_factor=capacity_factor,
             price_load_mode=price_load_mode,
+            scenario_profile=scenario_profile,
         )
         variants = [
             run_greedy_deadline_price(scenario, kappa=kappa),
             run_online_lyapunov_admm(scenario, kappa=kappa, V=V, name="full_online_ladmm"),
+            run_online_centralized_slot(scenario, kappa=kappa, V=V),
             run_online_lyapunov_admm(
                 scenario,
                 kappa=kappa,
@@ -1124,6 +1556,7 @@ def run_rho_sweep(
     capacity_factor: float,
     rho_values: list[float],
     price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     scenario = build_scenario(
@@ -1131,6 +1564,7 @@ def run_rho_sweep(
         seed=seed,
         capacity_factor=capacity_factor,
         price_load_mode=price_load_mode,
+        scenario_profile=scenario_profile,
     )
     rows = []
     for rho in rho_values:
@@ -1152,6 +1586,7 @@ def run_risk_correlation_sweep(
     capacity_factor: float,
     kappa_values: list[float],
     price_load_modes: list[str],
+    scenario_profile: str = "synthetic",
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -1164,6 +1599,7 @@ def run_risk_correlation_sweep(
             capacity_factor=capacity_factor,
             kappa_values=kappa_values,
             price_load_mode=mode,
+            scenario_profile=scenario_profile,
         )
         summary["price_load_mode"] = mode
         rows.append(summary)
@@ -1212,9 +1648,12 @@ def main() -> None:
             "risk-sweep",
             "risk-correlation-sweep",
             "scalability-sweep",
+            "scalability-fast",
             "multiseed-base",
             "ablation",
             "rho-sweep",
+            "real-data-base",
+            "real-data-multiday",
         ],
         default="base",
     )
@@ -1231,6 +1670,15 @@ def main() -> None:
     parser.add_argument("--seeds", type=str, default="7,11,13")
     parser.add_argument("--price-load-mode", choices=["aligned", "inverted", "flat"], default="aligned")
     parser.add_argument("--price-load-modes", type=str, default="aligned,inverted")
+    parser.add_argument("--scenario-profile", choices=["synthetic", "workplace"], default="synthetic")
+    parser.add_argument("--method-set", choices=["fast", "online"], default="fast")
+    parser.add_argument(
+        "--real-data-csv",
+        type=Path,
+        default=Path("data/raw/elaadnl_office_parking_v2/202410DatasetEVOfficeParking_v0.csv"),
+    )
+    parser.add_argument("--real-data-date", type=str, default=None)
+    parser.add_argument("--real-data-days", type=int, default=5)
     parser.add_argument("--out-dir", type=Path, default=Path("outputs/base_experiment"))
     args = parser.parse_args()
 
@@ -1243,6 +1691,7 @@ def main() -> None:
             V=args.V,
             capacity_factors=parse_float_list(args.capacity_factors),
             price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
         )
     elif args.mode == "v-sweep":
         metrics = run_v_sweep(
@@ -1253,6 +1702,7 @@ def main() -> None:
             capacity_factor=args.capacity_factor,
             V_values=parse_float_list(args.V_values),
             price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
         )
     elif args.mode == "risk-sweep":
         metrics = run_risk_sweep(
@@ -1263,6 +1713,7 @@ def main() -> None:
             capacity_factor=args.capacity_factor,
             kappa_values=parse_float_list(args.kappa_values),
             price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
         )
     elif args.mode == "risk-correlation-sweep":
         metrics = run_risk_correlation_sweep(
@@ -1273,6 +1724,7 @@ def main() -> None:
             capacity_factor=args.capacity_factor,
             kappa_values=parse_float_list(args.kappa_values),
             price_load_modes=[item.strip() for item in args.price_load_modes.split(",") if item.strip()],
+            scenario_profile=args.scenario_profile,
         )
     elif args.mode == "scalability-sweep":
         metrics = run_scalability_sweep(
@@ -1283,6 +1735,19 @@ def main() -> None:
             V=args.V,
             capacity_factor=args.capacity_factor,
             price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
+        )
+    elif args.mode == "scalability-fast":
+        metrics = run_scalability_fast_sweep(
+            n_values=parse_int_list(args.n_values),
+            seed=args.seed,
+            out_dir=args.out_dir,
+            kappa=args.kappa,
+            V=args.V,
+            capacity_factor=args.capacity_factor,
+            price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
+            method_set=args.method_set,
         )
     elif args.mode == "multiseed-base":
         metrics = run_multiseed_base(
@@ -1293,6 +1758,7 @@ def main() -> None:
             V=args.V,
             capacity_factor=args.capacity_factor,
             price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
         )
     elif args.mode == "ablation":
         metrics = run_ablation_sweep(
@@ -1303,6 +1769,7 @@ def main() -> None:
             V=args.V,
             capacity_factor=args.capacity_factor,
             price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
         )
     elif args.mode == "rho-sweep":
         metrics = run_rho_sweep(
@@ -1313,6 +1780,31 @@ def main() -> None:
             capacity_factor=args.capacity_factor,
             rho_values=parse_float_list(args.rho_values),
             price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
+        )
+    elif args.mode == "real-data-base":
+        metrics = run_real_data_base_experiment(
+            csv_path=args.real_data_csv,
+            n_ev=args.n_ev,
+            seed=args.seed,
+            out_dir=args.out_dir,
+            kappa=args.kappa,
+            V=args.V,
+            capacity_factor=args.capacity_factor,
+            price_load_mode=args.price_load_mode,
+            real_data_date=args.real_data_date,
+        )
+    elif args.mode == "real-data-multiday":
+        metrics = run_real_data_multiday_experiment(
+            csv_path=args.real_data_csv,
+            n_ev=args.n_ev,
+            seed=args.seed,
+            out_dir=args.out_dir,
+            kappa=args.kappa,
+            V=args.V,
+            capacity_factor=args.capacity_factor,
+            price_load_mode=args.price_load_mode,
+            real_data_days=args.real_data_days,
         )
     else:
         metrics = run_base_experiment(
@@ -1323,6 +1815,7 @@ def main() -> None:
             V=args.V,
             capacity_factor=args.capacity_factor,
             price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
         )
 
     display_cols = [
@@ -1335,6 +1828,15 @@ def main() -> None:
         "runtime_s",
         "capacity_violation_rate",
     ]
+    if "total_cost_mean" in metrics.columns:
+        display_cols = [
+            "method",
+            "total_cost_mean",
+            "peak_total_load_kw_mean",
+            "deadline_violation_rate_mean",
+            "capacity_violation_rate_mean",
+            "runtime_s_mean",
+        ]
     available_display_cols = [col for col in display_cols if col in metrics.columns]
     if available_display_cols:
         print(metrics[available_display_cols].to_string(index=False))

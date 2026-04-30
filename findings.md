@@ -40,3 +40,7 @@ This file records extracted facts from the project materials.
 - Implemented methods: uncontrolled capped charging, greedy deadline/price heuristic, offline centralized LP, dual decomposition, offline ADMM, and online Lyapunov-ADMM.
 - A deadline safety floor was added to online Lyapunov-ADMM because the pure soft queue version was too conservative in tight capacity scenarios.
 - Key result pattern so far: offline centralized and offline ADMM achieve lower cost using full future information; online Lyapunov-ADMM achieves lower peak load and better capacity safety under online uncertainty.
+- Public-data check now uses the 4TU/ElaadNL office parking-lot dataset, DOI `10.4121/80ef3824-3f5d-4e45-8794-3b8791efbd13.v2`.
+- The real-data experiment uses real session start time, end time, and delivered energy. It still simulates electricity price and base-load uncertainty, so it is an external-validity check rather than a full field deployment.
+- On five high-activity public-data days with up to 50 sessions/day and `V=0.8, kappa=1.0`, online Lyapunov-ADMM reduces mean peak load from 208.26 kW (offline centralized LP) to 198.49 kW and capacity violation from 3.8% to 1.2%, but has 10.8% deadline violation. Lower `V` removes deadline violation but worsens peak/capacity risk.
+- The current paper draft compiles with Tectonic to `paper/build/main.pdf` and has 8 pages with 45 cited bibliography entries.

@@ -33,3 +33,17 @@
 - Added `论文可用图表与结论索引.md` to explain each final figure/table in plain language for paper writing and presentation preparation.
 - Re-ran `python -m py_compile experiments\ev_charging_experiments.py`; the experiment script passed syntax checking.
 - Ran a small CLI smoke test with 12 EVs under `outputs/smoke_check/`; all six methods completed and produced baseline metrics.
+- Added `scenario_profile` support to the experiment script with `synthetic` and `workplace` profiles.
+- Ran 30-seed baseline statistics under `outputs/multiseed_base_30/`; the main trade-off remains stable.
+- Ran workplace-profile baseline and 10-seed workplace statistics under `outputs/workplace_base/` and `outputs/workplace_multiseed_10/`.
+- Updated `paper/main.tex` to use 30-seed baseline numbers and added an operational method-characteristics table plus workplace sensitivity discussion.
+- Added `后续建议完成情况与剩余任务.md` to track completed, partially completed, and externally blocked recommendations from `后续任务及建议.md`.
+- Added `scalability-fast` mode and ran 1000/2000 EV large-scale checks under `outputs/scalability_fast_large/`.
+- Added `online_centralized_slot` ablation, reran `outputs/ablation_3_v08/`, and updated the paper/table interpretation to include this no-ADMM centralized per-slot baseline.
+- Downloaded and parsed the 4TU/ElaadNL public office parking-lot dataset (DOI `10.4121/80ef3824-3f5d-4e45-8794-3b8791efbd13.v2`) under ignored `data/raw/`.
+- Added `real-data-base` and `real-data-multiday` experiment modes using real session start time, end time, and delivered energy.
+- Ran real public-data checks under `outputs/real_elaadnl_base/`, `outputs/real_elaadnl_multiday_5/`, `outputs/real_elaadnl_multiday_5_v02/`, and `outputs/real_elaadnl_multiday_5_v02_k2/`.
+- Expanded `paper/references.bib` to 45 entries; all 45 are cited in `paper/main.tex`, and 44 include DOI fields.
+- Downloaded local Tectonic 0.16.9 for PDF compilation, compiled `paper/build/main.pdf`, and verified the latest PDF has 8 pages.
+- Rendered PDF page 1 and page 8 previews with ImageMagick/Ghostscript; no visible clipping or reference overflow was found.
+- Removed the tracked Python cache file from git tracking with `git rm --cached`; `.gitignore` now ignores `data/raw/` and `tools/tectonic/`.

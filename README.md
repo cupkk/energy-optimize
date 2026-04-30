@@ -20,10 +20,16 @@ Run one baseline comparison:
 python experiments/ev_charging_experiments.py --mode base --n-ev 50 --seed 7 --kappa 1.0 --V 0.8 --capacity-factor 0.32 --out-dir outputs/base_experiment
 ```
 
-Run 10-seed baseline statistics:
+Run 30-seed baseline statistics:
 
 ```powershell
-python experiments/ev_charging_experiments.py --mode multiseed-base --n-ev 50 --seeds 1,2,3,4,5,6,7,8,9,10 --kappa 1.0 --V 0.8 --capacity-factor 0.32 --out-dir outputs/multiseed_base_10
+python experiments/ev_charging_experiments.py --mode multiseed-base --n-ev 50 --seeds 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30 --kappa 1.0 --V 0.8 --capacity-factor 0.32 --out-dir outputs/multiseed_base_30
+```
+
+Run a workplace-style semi-realistic sensitivity check:
+
+```powershell
+python experiments/ev_charging_experiments.py --mode multiseed-base --n-ev 50 --seeds 1,2,3,4,5,6,7,8,9,10 --kappa 1.0 --V 0.8 --capacity-factor 0.32 --scenario-profile workplace --out-dir outputs/workplace_multiseed_10
 ```
 
 Run capacity pressure sweep:
@@ -56,6 +62,21 @@ Run offline ADMM rho sweep:
 python experiments/ev_charging_experiments.py --mode rho-sweep --n-ev 50 --seed 7 --kappa 1.0 --capacity-factor 0.32 --rho-values 0.1,0.5,1,2,5,10 --out-dir outputs/offline_admm_rho_sweep
 ```
 
+Run large-scale fast scalability check:
+
+```powershell
+python experiments/ev_charging_experiments.py --mode scalability-fast --n-values 1000,2000 --seed 7 --kappa 1.0 --V 0.8 --capacity-factor 0.32 --method-set fast --out-dir outputs/scalability_fast_large
+```
+
+Download the public 4TU/ElaadNL office parking dataset and run a real-session check:
+
+```powershell
+New-Item -ItemType Directory -Force -Path data/raw | Out-Null
+Invoke-WebRequest -Uri "https://data.4tu.nl/ndownloader/items/80ef3824-3f5d-4e45-8794-3b8791efbd13/versions/2" -OutFile data/raw/elaadnl_office_parking_v2.zip -UseBasicParsing
+Expand-Archive -LiteralPath data/raw/elaadnl_office_parking_v2.zip -DestinationPath data/raw/elaadnl_office_parking_v2 -Force
+python experiments/ev_charging_experiments.py --mode real-data-multiday --n-ev 50 --seed 7 --kappa 1.0 --V 0.8 --capacity-factor 0.32 --out-dir outputs/real_elaadnl_multiday_5
+```
+
 ## Key Output Files
 
 Each command writes CSV summaries and PNG figures under the selected `outputs/` subdirectory. The most useful summary files are:
@@ -66,7 +87,21 @@ Each command writes CSV summaries and PNG figures under the selected `outputs/` 
 - `risk_correlation_sweep.csv`
 - `ablation_summary.csv`
 - `offline_admm_rho_sweep.csv`
+- `scalability_fast_summary.csv`
+- `real_data_multiday_summary.csv`
+
+## Scenario Profiles
+
+- `synthetic`: default mixed daily-arrival profile with morning and evening peaks.
+- `workplace`: semi-realistic workplace profile with morning arrivals, workday-length parking, and lognormal charging demand. This is a sensitivity setting, not a replacement for validation on raw public charging data.
+- `real_csv`: public-session profile created by `--mode real-data-base` or `--mode real-data-multiday`. It uses real session start time, end time, and delivered energy from the 4TU/ElaadNL office parking dataset, while price and base-load uncertainty are still simulated inside this project.
 
 ## Paper Draft
 
-The current English LaTeX draft is under `paper/main.tex`, with references in `paper/references.bib`. The local environment used during development did not provide `pdflatex` or `bibtex`, so compile the PDF in a LaTeX-enabled environment.
+The current English LaTeX draft is under `paper/main.tex`, with references in `paper/references.bib`. A local Tectonic compile was used during development:
+
+```powershell
+tools/tectonic/tectonic.exe paper/main.tex --outdir paper/build --keep-logs --keep-intermediates
+```
+
+The latest checked PDF is `paper/build/main.pdf`. It compiles to 8 single-column pages with 45 bibliography entries.

@@ -12,6 +12,12 @@ The project compares offline EV charging optimization with an online Lyapunov-AD
 python -m pip install -r requirements.txt
 ```
 
+The reported results were generated with Python 3.12.3 and the pinned packages in `requirements-lock.txt`:
+
+```powershell
+python -m pip install -r requirements-lock.txt
+```
+
 ## Core Commands
 
 Run one baseline comparison:
@@ -42,6 +48,12 @@ Run Lyapunov parameter sweep:
 
 ```powershell
 python experiments/ev_charging_experiments.py --mode v-sweep --n-ev 50 --seed 7 --kappa 1.0 --capacity-factor 0.22 --V-values 0.05,0.1,0.2,0.5,0.8,1,1.2,1.5,2,5 --out-dir outputs/tight_v_sweep_refined
+```
+
+Run reference-margin sensitivity for `P_ref(t)=gamma(C_t-Bhat_t-kappa sigma_t)^+`:
+
+```powershell
+python experiments/ev_charging_experiments.py --mode p-ref-sweep --n-ev 50 --seeds 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30 --kappa 1.0 --V 0.8 --capacity-factor 0.22 --p-ref-ratios 0.7,0.8,0.82,0.9,1.0 --out-dir outputs/p_ref_sweep_v08_30
 ```
 
 Run risk-buffer sweep under different price-load correlations:
@@ -77,6 +89,18 @@ Expand-Archive -LiteralPath data/raw/elaadnl_office_parking_v2.zip -DestinationP
 python experiments/ev_charging_experiments.py --mode real-data-multiday --n-ev 50 --seed 7 --kappa 1.0 --V 0.8 --capacity-factor 0.32 --out-dir outputs/real_elaadnl_multiday_5
 ```
 
+Run the main paper experiment set:
+
+```powershell
+python scripts/run_paper_experiments.py
+```
+
+Run tests:
+
+```powershell
+python -m pytest
+```
+
 ## Key Output Files
 
 Each command writes CSV summaries and PNG figures under the selected `outputs/` subdirectory. The most useful summary files are:
@@ -84,11 +108,14 @@ Each command writes CSV summaries and PNG figures under the selected `outputs/` 
 - `multiseed_base_summary.csv`
 - `capacity_sweep_summary.csv`
 - `lyapunov_v_sweep.csv`
+- `p_ref_sweep_summary.csv`
 - `risk_correlation_sweep.csv`
 - `ablation_summary.csv`
 - `offline_admm_rho_sweep.csv`
 - `scalability_fast_summary.csv`
 - `real_data_multiday_summary.csv`
+
+The lightweight CSV files used directly by the paper figure script are tracked under `results/processed/`. The larger `outputs/` directory is still ignored for new generated files.
 
 ## Scenario Profiles
 
@@ -104,4 +131,10 @@ The current English LaTeX draft is under `paper/main.tex`, with references in `p
 tools/tectonic/tectonic.exe paper/main.tex --outdir paper/build --keep-logs --keep-intermediates
 ```
 
-The latest checked PDF is `paper/build/main.pdf`. It compiles to 8 single-column pages with 45 bibliography entries.
+Regenerate paper figures with:
+
+```powershell
+python scripts/make_all_figures.py
+```
+
+The latest checked PDF is `paper/build/main.pdf`. It is an SCI-style two-column draft with 45 bibliography entries.

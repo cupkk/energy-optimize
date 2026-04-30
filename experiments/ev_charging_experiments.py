@@ -611,6 +611,8 @@ def run_online_lyapunov_admm(
     kappa: float = 1.0,
     V: float = 1.0,
     beta: float = 0.015,
+    alpha: float = 0.02,
+    p_ref_ratio: float = 0.82,
     urgency_delta: float = 1.0,
     max_iter: int = 80,
     use_deadline_floor: bool = True,
@@ -624,6 +626,8 @@ def run_online_lyapunov_admm(
     total_iters = 0
     used_slots = 0
     final_residuals = []
+    floor_relaxation_slots = 0
+    floor_excess_kw_sum = 0.0
 
     for t in range(scenario.n_slots):
         active_idx = np.flatnonzero(active_mask(scenario, t) & (remaining > 1e-6))
@@ -649,13 +653,17 @@ def run_online_lyapunov_admm(
             lower = np.minimum(lower, pmax)
         else:
             lower = np.zeros_like(pmax)
+        lower_sum = float(lower.sum())
+        if lower_sum > float(cap[t]) and lower_sum > 0:
+            floor_relaxation_slots += 1
+            floor_excess_kw_sum += lower_sum - float(cap[t])
         urgency_weight = 1.0 / (slots_left + urgency_delta) if use_queue_urgency else np.zeros_like(slots_left, dtype=float)
 
         linear = (
             V * scenario.price[t] * scenario.delta_h
             - urgency_weight * remaining[active_idx] * scenario.eta[active_idx] * scenario.delta_h
         )
-        p_ref = 0.82 * float(cap[t])
+        p_ref = p_ref_ratio * float(cap[t])
         smooth_weight = V * beta
         p, iters, primal, dual = admm_per_slot(
             linear,
@@ -664,6 +672,7 @@ def run_online_lyapunov_admm(
             p_ref,
             smooth_weight,
             lower=lower,
+            alpha=alpha,
             max_iter=max_iter,
         )
         schedule[active_idx, t] = p
@@ -680,6 +689,11 @@ def run_online_lyapunov_admm(
         "avg_final_dual_residual": float(np.mean([x[1] for x in final_residuals])) if final_residuals else 0.0,
         "V": V,
         "beta": beta,
+        "alpha": alpha,
+        "p_ref_ratio": p_ref_ratio,
+        "deadline_floor_relaxation_slots": floor_relaxation_slots,
+        "deadline_floor_relaxation_rate": floor_relaxation_slots / max(used_slots, 1),
+        "deadline_floor_excess_kw_sum": floor_excess_kw_sum,
     }
     return MethodResult(name, schedule, remaining, time.perf_counter() - start, extra)
 
@@ -689,6 +703,8 @@ def run_online_centralized_slot(
     kappa: float = 1.0,
     V: float = 1.0,
     beta: float = 0.015,
+    alpha: float = 0.02,
+    p_ref_ratio: float = 0.82,
     urgency_delta: float = 1.0,
     use_deadline_floor: bool = True,
     use_queue_urgency: bool = True,
@@ -698,6 +714,8 @@ def run_online_centralized_slot(
     schedule = np.zeros((scenario.n_ev, scenario.n_slots))
     remaining = scenario.energy_kwh.copy()
     solver_failures = 0
+    floor_relaxation_slots = 0
+    floor_excess_kw_sum = 0.0
 
     for t in range(scenario.n_slots):
         active_idx = np.flatnonzero(active_mask(scenario, t) & (remaining > 1e-6))
@@ -724,6 +742,8 @@ def run_online_centralized_slot(
         else:
             lower = np.zeros_like(pmax)
         if lower.sum() > cap[t] and lower.sum() > 0:
+            floor_relaxation_slots += 1
+            floor_excess_kw_sum += float(lower.sum()) - float(cap[t])
             lower = lower * (float(cap[t]) / float(lower.sum()))
 
         urgency_weight = 1.0 / (slots_left + urgency_delta) if use_queue_urgency else np.zeros_like(slots_left, dtype=float)
@@ -731,11 +751,11 @@ def run_online_centralized_slot(
             V * scenario.price[t] * scenario.delta_h
             - urgency_weight * remaining[active_idx] * scenario.eta[active_idx] * scenario.delta_h
         )
-        p_ref = 0.82 * float(cap[t])
+        p_ref = p_ref_ratio * float(cap[t])
         smooth_weight = V * beta
 
         def objective(x: np.ndarray) -> float:
-            return float(linear @ x + smooth_weight * (float(x.sum()) - p_ref) ** 2)
+            return float(linear @ x + 0.5 * alpha * float(x @ x) + smooth_weight * (float(x.sum()) - p_ref) ** 2)
 
         x0 = project_box_capped_sum(np.maximum(lower, 0.0), lower, pmax, float(cap[t]))
         constraints = [{"type": "ineq", "fun": lambda x, c=float(cap[t]): c - float(np.sum(x))}]
@@ -753,7 +773,12 @@ def run_online_centralized_slot(
     extra = {
         "V": V,
         "beta": beta,
+        "alpha": alpha,
+        "p_ref_ratio": p_ref_ratio,
         "centralized_slot_solver_failures": solver_failures,
+        "deadline_floor_relaxation_slots": floor_relaxation_slots,
+        "deadline_floor_relaxation_rate": floor_relaxation_slots / max(scenario.n_slots, 1),
+        "deadline_floor_excess_kw_sum": floor_excess_kw_sum,
     }
     return MethodResult("online_centralized_slot", schedule, remaining, time.perf_counter() - start, extra)
 
@@ -1183,6 +1208,8 @@ def run_online_only_metrics(
     kappa: float,
     V: float,
     capacity_factor: float,
+    alpha: float = 0.02,
+    p_ref_ratio: float = 0.82,
     price_load_mode: str = "aligned",
     scenario_profile: str = "synthetic",
     use_deadline_floor: bool = True,
@@ -1200,6 +1227,8 @@ def run_online_only_metrics(
         scenario,
         kappa=kappa,
         V=V,
+        alpha=alpha,
+        p_ref_ratio=p_ref_ratio,
         use_deadline_floor=use_deadline_floor,
         use_queue_urgency=use_queue_urgency,
         name=name,
@@ -1266,6 +1295,76 @@ def run_v_sweep(
     summary = pd.DataFrame(rows)
     summary.to_csv(out_dir / "lyapunov_v_sweep.csv", index=False, encoding="utf-8-sig")
     plot_v_sweep(summary, out_dir)
+    return summary
+
+
+def plot_p_ref_sweep(summary: pd.DataFrame, out_dir: Path) -> None:
+    fig, ax = plt.subplots(figsize=(7.4, 4.6))
+    ax2 = ax.twinx()
+    cost_col = "total_cost_mean" if "total_cost_mean" in summary.columns else "total_cost"
+    peak_col = "peak_total_load_kw_mean" if "peak_total_load_kw_mean" in summary.columns else "peak_total_load_kw"
+    unserved_col = "unserved_energy_ratio_mean" if "unserved_energy_ratio_mean" in summary.columns else "unserved_energy_ratio"
+    ax.plot(summary["p_ref_ratio"], summary[cost_col], marker="o", linewidth=2.0, color="#2563eb", label="Cost")
+    ax.plot(
+        summary["p_ref_ratio"],
+        summary[peak_col],
+        marker="s",
+        linewidth=2.0,
+        color="#64748b",
+        label="Peak load",
+    )
+    ax2.plot(
+        summary["p_ref_ratio"],
+        summary[unserved_col],
+        marker="^",
+        linewidth=2.0,
+        color="#dc2626",
+        label="Unserved ratio",
+    )
+    ax.set_xlabel("Reference-margin ratio gamma")
+    ax.set_ylabel("Cost / peak load")
+    ax2.set_ylabel("Unserved ratio")
+    ax.grid(alpha=0.25)
+    lines = ax.get_lines() + ax2.get_lines()
+    ax.legend(lines, [line.get_label() for line in lines], loc="best")
+    fig.tight_layout()
+    fig.savefig(out_dir / "p_ref_sweep.png", dpi=180)
+    plt.close(fig)
+
+
+def run_p_ref_sweep(
+    n_ev: int,
+    seeds: list[int],
+    out_dir: Path,
+    kappa: float,
+    V: float,
+    capacity_factor: float,
+    p_ref_ratios: list[float],
+    price_load_mode: str = "aligned",
+    scenario_profile: str = "synthetic",
+) -> pd.DataFrame:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for seed in seeds:
+        for ratio in p_ref_ratios:
+            row = run_online_only_metrics(
+                n_ev=n_ev,
+                seed=seed,
+                kappa=kappa,
+                V=V,
+                capacity_factor=capacity_factor,
+                p_ref_ratio=ratio,
+                price_load_mode=price_load_mode,
+                scenario_profile=scenario_profile,
+            )
+            row["seed"] = seed
+            row["p_ref_ratio"] = ratio
+            rows.append(row)
+    raw = pd.DataFrame(rows)
+    raw.to_csv(out_dir / "p_ref_sweep_raw.csv", index=False, encoding="utf-8-sig")
+    summary = summarize_replicates(raw, ["p_ref_ratio"])
+    summary.to_csv(out_dir / "p_ref_sweep_summary.csv", index=False, encoding="utf-8-sig")
+    plot_p_ref_sweep(summary, out_dir)
     return summary
 
 
@@ -1645,6 +1744,7 @@ def main() -> None:
             "base",
             "capacity-sweep",
             "v-sweep",
+            "p-ref-sweep",
             "risk-sweep",
             "risk-correlation-sweep",
             "scalability-sweep",
@@ -1664,6 +1764,7 @@ def main() -> None:
     parser.add_argument("--capacity-factor", type=float, default=0.32)
     parser.add_argument("--capacity-factors", type=str, default="0.40,0.32,0.26,0.22,0.20")
     parser.add_argument("--V-values", type=str, default="0.05,0.1,0.2,0.5,0.8,1,1.2,1.5,2,5")
+    parser.add_argument("--p-ref-ratios", type=str, default="0.7,0.8,0.82,0.9,1.0")
     parser.add_argument("--kappa-values", type=str, default="0,0.5,1,1.5,2")
     parser.add_argument("--rho-values", type=str, default="0.1,0.5,1,2,5,10")
     parser.add_argument("--n-values", type=str, default="50,100,200,500")
@@ -1701,6 +1802,18 @@ def main() -> None:
             kappa=args.kappa,
             capacity_factor=args.capacity_factor,
             V_values=parse_float_list(args.V_values),
+            price_load_mode=args.price_load_mode,
+            scenario_profile=args.scenario_profile,
+        )
+    elif args.mode == "p-ref-sweep":
+        metrics = run_p_ref_sweep(
+            n_ev=args.n_ev,
+            seeds=parse_int_list(args.seeds),
+            out_dir=args.out_dir,
+            kappa=args.kappa,
+            V=args.V,
+            capacity_factor=args.capacity_factor,
+            p_ref_ratios=parse_float_list(args.p_ref_ratios),
             price_load_mode=args.price_load_mode,
             scenario_profile=args.scenario_profile,
         )

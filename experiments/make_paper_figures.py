@@ -12,6 +12,7 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PROCESSED = ROOT / "results" / "processed"
 
 
 METHOD_LABELS = {
@@ -19,7 +20,7 @@ METHOD_LABELS = {
     "offline_admm": "Offline ADMM",
     "dual_decomposition": "Dual decomp.",
     "greedy_deadline_price": "Greedy",
-    "uncontrolled_capped": "Uncontrolled",
+    "uncontrolled_capped": "Immediate capped",
     "online_lyapunov_admm": "Online L-ADMM",
 }
 
@@ -54,6 +55,21 @@ def save_figure(fig: plt.Figure, name: str) -> None:
     fig.savefig(fig_dir / f"{name}.pdf", facecolor="white", transparent=False)
     fig.savefig(fig_dir / f"{name}.png", dpi=300, facecolor="white", transparent=False)
     plt.close(fig)
+
+
+def read_paper_csv(processed_name: str, output_relative: str) -> pd.DataFrame:
+    processed_path = PROCESSED / processed_name
+    if processed_path.exists():
+        return pd.read_csv(processed_path)
+
+    output_path = ROOT / output_relative
+    if output_path.exists():
+        return pd.read_csv(output_path)
+
+    raise FileNotFoundError(
+        "Missing paper figure data. Expected either "
+        f"{processed_path} or {output_path}. Run the paper experiments or restore results/processed."
+    )
 
 
 def finish_axes(ax: plt.Axes) -> None:
@@ -111,8 +127,8 @@ def build_framework_diagram() -> None:
 
 def build_summary_figure() -> None:
     configure_style()
-    baseline = pd.read_csv(ROOT / "outputs" / "multiseed_base_30" / "multiseed_base_summary.csv")
-    v_sweep = pd.read_csv(ROOT / "outputs" / "tight_v_sweep_refined" / "lyapunov_v_sweep.csv")
+    baseline = read_paper_csv("multiseed_base_summary.csv", "outputs/multiseed_base_30/multiseed_base_summary.csv")
+    v_sweep = read_paper_csv("lyapunov_v_sweep.csv", "outputs/tight_v_sweep_refined/lyapunov_v_sweep.csv")
 
     fig, axes = plt.subplots(1, 2, figsize=(6.7, 2.45))
 
@@ -187,7 +203,7 @@ def build_summary_figure() -> None:
 
 def build_capacity_pressure_figure() -> None:
     configure_style()
-    df = pd.read_csv(ROOT / "outputs" / "capacity_sweep_v08" / "capacity_sweep_summary.csv")
+    df = read_paper_csv("capacity_sweep_summary.csv", "outputs/capacity_sweep_v08/capacity_sweep_summary.csv")
     methods = ["offline_centralized_lp", "greedy_deadline_price", "dual_decomposition", "online_lyapunov_admm"]
     colors = {
         "offline_centralized_lp": "#222222",
@@ -216,7 +232,7 @@ def build_capacity_pressure_figure() -> None:
 
 def build_risk_buffer_figure() -> None:
     configure_style()
-    df = pd.read_csv(ROOT / "outputs" / "risk_correlation" / "risk_correlation_sweep.csv")
+    df = read_paper_csv("risk_correlation_sweep.csv", "outputs/risk_correlation/risk_correlation_sweep.csv")
     fig, axes = plt.subplots(1, 2, figsize=(6.7, 2.45), sharex=True)
     legend_handles = None
     for ax, mode in zip(axes, ["aligned", "inverted"]):
@@ -241,7 +257,7 @@ def build_risk_buffer_figure() -> None:
 
 def build_ablation_figure() -> None:
     configure_style()
-    df = pd.read_csv(ROOT / "outputs" / "ablation_3_v08" / "ablation_summary.csv")
+    df = read_paper_csv("ablation_summary.csv", "outputs/ablation_3_v08/ablation_summary.csv")
     order = [
         "full_online_ladmm",
         "no_deadline_floor",
@@ -253,12 +269,12 @@ def build_ablation_figure() -> None:
     labels = ["Full", "No floor", "No queue", "No buffer", "Centralized", "Greedy"]
     sub = df.set_index("method").loc[order].reset_index()
     x = np.arange(len(order))
-    fig, ax = plt.subplots(figsize=(6.7, 2.55))
+    fig, ax = plt.subplots(figsize=(3.35, 2.15))
     ax2 = ax.twinx()
-    bars = ax.bar(x - 0.18, sub["unserved_energy_ratio_mean"], width=0.36, color="#b23a48", alpha=0.82, label="Unserved")
-    ax2.bar(x + 0.18, sub["runtime_s_mean"], width=0.36, color="#1f4e79", alpha=0.82, label="Runtime")
+    bars = ax.bar(x - 0.17, sub["unserved_energy_ratio_mean"], width=0.34, color="#b23a48", alpha=0.82, label="Unserved")
+    ax2.bar(x + 0.17, sub["runtime_s_mean"], width=0.34, color="#1f4e79", alpha=0.82, label="Runtime")
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=18, ha="right")
+    ax.set_xticklabels(labels, rotation=22, ha="right")
     ax.set_ylabel("Unserved ratio", color="#b23a48")
     ax2.set_ylabel("Runtime (s)", color="#1f4e79")
     ax.tick_params(axis="y", colors="#b23a48")
@@ -273,8 +289,11 @@ def build_ablation_figure() -> None:
 
 def build_scalability_figure() -> None:
     configure_style()
-    df = pd.read_csv(ROOT / "outputs" / "scalability_sweep_with_baselines" / "scalability_sweep_summary.csv")
-    large = pd.read_csv(ROOT / "outputs" / "scalability_fast_large" / "scalability_fast_summary.csv")
+    df = read_paper_csv(
+        "scalability_sweep_summary.csv",
+        "outputs/scalability_sweep_with_baselines/scalability_sweep_summary.csv",
+    )
+    large = read_paper_csv("scalability_fast_summary.csv", "outputs/scalability_fast_large/scalability_fast_summary.csv")
     methods = ["offline_centralized_lp", "offline_admm", "dual_decomposition", "online_lyapunov_admm"]
     colors = {
         "offline_centralized_lp": "#222222",
@@ -282,7 +301,7 @@ def build_scalability_figure() -> None:
         "dual_decomposition": "#8c6d31",
         "online_lyapunov_admm": "#1f4e79",
     }
-    fig, axes = plt.subplots(1, 2, figsize=(6.7, 2.45))
+    fig, axes = plt.subplots(2, 1, figsize=(3.35, 3.55))
     for method in methods:
         sub = df[df["method"] == method].sort_values("n_ev")
         axes[0].plot(sub["n_ev"], sub["runtime_s"], marker="o", markersize=3.2, color=colors[method], label=METHOD_LABELS.get(method, method))
@@ -302,35 +321,28 @@ def build_scalability_figure() -> None:
     axes[1].set_ylabel("Runtime (s, log)")
     finish_axes(axes[1])
     axes[1].legend(loc="upper left", fontsize=6.2)
-    fig.tight_layout(w_pad=2.0)
+    fig.tight_layout(h_pad=1.3)
     save_figure(fig, "scalability_runtime")
 
 
 def build_public_data_figure() -> None:
     configure_style()
-    df = pd.read_csv(ROOT / "outputs" / "real_elaadnl_multiday_5" / "real_data_multiday_summary.csv")
+    df = read_paper_csv("real_data_multiday_summary.csv", "outputs/real_elaadnl_multiday_5/real_data_multiday_summary.csv")
     order = ["offline_centralized_lp", "offline_admm", "greedy_deadline_price", "online_lyapunov_admm", "uncontrolled_capped"]
     labels = [METHOD_LABELS.get(m, m) for m in order]
     sub = df.set_index("method").loc[order].reset_index()
     x = np.arange(len(order))
-    fig, axes = plt.subplots(1, 2, figsize=(6.7, 2.45))
-    axes[0].bar(x, sub["peak_total_load_kw_mean"], color="#1f4e79", alpha=0.86)
-    axes[0].set_title("(a) Mean peak load")
-    axes[0].set_ylabel("Peak load (kW)")
-    axes[0].set_xticks(x)
-    axes[0].set_xticklabels(labels, rotation=22, ha="right")
-    finish_axes(axes[0])
-
+    fig, ax = plt.subplots(figsize=(3.35, 2.25))
     width = 0.36
-    axes[1].bar(x - width / 2, sub["capacity_violation_rate_mean"], width=width, color="#b23a48", alpha=0.82, label="Cap. viol.")
-    axes[1].bar(x + width / 2, sub["deadline_violation_rate_mean"], width=width, color="#7a7a7a", alpha=0.82, label="Deadline")
-    axes[1].set_title("(b) Violation rates")
-    axes[1].set_ylabel("Rate")
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(labels, rotation=22, ha="right")
-    axes[1].legend(loc="upper left", fontsize=6.7)
-    finish_axes(axes[1])
-    fig.tight_layout(w_pad=1.8)
+    ax.bar(x - width / 2, sub["capacity_violation_rate_mean"], width=width, color="#b23a48", alpha=0.82, label="Cap. viol.")
+    ax.bar(x + width / 2, sub["deadline_violation_rate_mean"], width=width, color="#7a7a7a", alpha=0.82, label="Deadline")
+    ax.set_title("Public-session violation rates")
+    ax.set_ylabel("Rate")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=22, ha="right")
+    ax.legend(loc="upper left", fontsize=6.7)
+    finish_axes(ax)
+    fig.tight_layout()
     save_figure(fig, "public_data_check")
 
 

@@ -56,3 +56,11 @@
 - Expanded `experiments/make_paper_figures.py` into the unified figure-generation script for all paper figures; generated framework, summary trade-off, capacity pressure, risk buffer, ablation, scalability, and public-data figures under `paper/figures/`.
 - Added `paper/build/` to `.gitignore` for cleaner repository hygiene. The compiled PDF is still available locally at `paper/build/main.pdf`.
 - Recompiled the SCI-style PDF. The current `paper/build/main.pdf` has 9 two-column pages, all 45 citations resolve, and no overfull boxes remain; only Tectonic/Windows font substitution and minor underfull vbox warnings remain.
+- Aligned the paper objective with the code implementation by exposing the online ADMM proximal regularizer `alpha=0.02` and adding it to the per-slot objective in `paper/main.tex`.
+- Replaced the implicit hard-coded reference load with `P_ref(t)=gamma * [C_t - Bhat_t - kappa sigma_t]^+`, added `p_ref_ratio` to the code, and ran a 30-seed `gamma` sensitivity sweep under `outputs/p_ref_sweep_v08_30/`.
+- Documented deadline-floor relaxation under capacity stress and added code metrics for floor-relaxation slots and excess floor demand.
+- Renamed the misleading `Uncontrolled` label to `Immediate capped` in paper tables and figures, because the implementation charges immediately but still scales powers by available capacity.
+- Added public-session preprocessing disclosure: five selected days, 250 selected sessions, zero energy-clipped sessions, mean observed energy 21.63 kWh, mean parking duration 6.43 h, and total requested energy 5408.46 kWh.
+- Added `results/processed/` with lightweight CSVs used by the paper figure script, so paper figures no longer depend solely on ignored `outputs/` folders.
+- Added `requirements-lock.txt`, `scripts/run_paper_experiments.py`, `scripts/make_all_figures.py`, and six pytest checks for projection, scenario validity, and online ADMM numerical feasibility.
+- Rebuilt all paper figures and recompiled `paper/build/main.pdf`; the PDF remains 9 pages, has no undefined citations or overfull boxes, and the remaining warnings are font substitution plus a minor underfull vbox.
